@@ -127,7 +127,7 @@ fn unwrap_result(result: usize) !i32 {
 }
 
 fn supervisor_process(socket: FD, child_pid: linux.pid_t) !void {
-    std.debug.print("Supervisor process, child pid = {}\n", .{child_pid});
+    std.debug.print("Supervisor process starting\n", .{});
 
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     defer _ = debug_allocator.deinit();
@@ -141,20 +141,18 @@ fn supervisor_process(socket: FD, child_pid: linux.pid_t) !void {
     // The child sends its process-local notify FD across the socket
     // We use its own PID + FD to look up the actual FD
 
-    var fd_bytes: [4]u8 = undefined;
-    const bytes_read = try posix.read(socket, &fd_bytes);
+    var child_notify_fd_bytes: [4]u8 = undefined;
+    const bytes_read = try posix.read(socket, &child_notify_fd_bytes);
     if (bytes_read != 4) {
         std.debug.print("failed to read fd from socket\n", .{});
         return error.ReadFailed;
     }
-    const child_notify_fd: FD = std.mem.readInt(i32, &fd_bytes, .little);
-    std.debug.print("Child's notify fd number: {}\n", .{child_notify_fd});
+    const child_notify_fd: FD = std.mem.readInt(i32, &child_notify_fd_bytes, .little);
 
     // Use child PID to look up its FD table
-    const fd_table: FD = try unwrap_result(
+    const child_fd_table: FD = try unwrap_result(
         linux.pidfd_open(child_pid, 0),
     );
-    std.debug.print("Got fd table: {}\n", .{fd_table});
 
     // Since notify FD was sent eagerly, poll child's FD table until FD is visible
     // Otherwise we'd have race condition
@@ -162,108 +160,62 @@ fn supervisor_process(socket: FD, child_pid: linux.pid_t) !void {
     var attempts: u32 = 0;
     while (attempts < 100) : (attempts += 1) {
         // Try to get the notify FD from the child's FD table
-        const getfd_result = linux.pidfd_getfd(
-            fd_table,
+        // This is the FD visible from our supervisor process
+        const notify_fd_result = linux.pidfd_getfd(
+            child_fd_table,
             child_notify_fd,
             0,
         );
-        std.debug.print("getfd_result: {}\n", .{getfd_result});
-        if (getfd_result > std.math.maxInt(isize)) {
+        std.debug.print("fd{d} @pid{d} should soon be visible\n", .{ child_notify_fd, child_pid });
+        if (notify_fd_result > std.math.maxInt(isize)) {
             // two's compliment ints, so this means a negative code
             // TODO: extract specifically the fd not exists code
-            std.debug.print("child pid {d} does not contain fd {d}, retrying...\n", .{ child_pid, child_notify_fd });
+            std.debug.print("fd{d} @pid{d} not found, retrying...\n", .{ child_notify_fd, child_pid });
             try io.sleep(std.Io.Duration.fromMilliseconds(10), .awake);
             continue;
         }
 
-        notify_fd = @intCast(getfd_result);
-        std.debug.print("Notify fd is visible in child's FD table: {}\n", .{notify_fd});
+        notify_fd = @intCast(notify_fd_result);
+        std.debug.print("fd{d} @pid{d} = {d}\n", .{ child_notify_fd, child_pid, notify_fd });
         break;
     } else {
         std.debug.print("pidfd_getfd failed after {} attempts\n", .{attempts});
         return error.PidfdGetfdFailed;
     }
 
-    // Now we have the listener fd! Start handling notifications
+    // Now we have the notify fd! Start handling notifications
     try handle_notifications(notify_fd);
 }
 
 fn handle_notifications(notify_fd: FD) !void {
     std.debug.print("Starting notification handler on fd {}\n", .{notify_fd});
 
-    // Debug: print struct sizes and ioctl values
-    std.debug.print("sizeof(notif) = {}, sizeof(notif_resp) = {}\n", .{
-        @sizeOf(linux.SECCOMP.notif),
-        @sizeOf(linux.SECCOMP.notif_resp),
-    });
-    std.debug.print("IOCTL_NOTIF.RECV = 0x{x}\n", .{linux.SECCOMP.IOCTL_NOTIF.RECV});
-    std.debug.print("IOCTL_NOTIF.SEND = 0x{x}\n", .{linux.SECCOMP.IOCTL_NOTIF.SEND});
-
-    // Query kernel for expected struct sizes
-    var sizes: linux.SECCOMP.notif_sizes = undefined;
-    const sizes_result = linux.syscall3(
-        .seccomp,
-        linux.SECCOMP.GET_NOTIF_SIZES,
-        0,
-        @intFromPtr(&sizes),
-    );
-    if (sizes_result == 0) {
-        std.debug.print("Kernel expects: notif={}, notif_resp={}, data={}\n", .{
-            sizes.notif,
-            sizes.notif_resp,
-            sizes.data,
-        });
-    } else {
-        std.debug.print("GET_NOTIF_SIZES failed\n", .{});
-    }
-
-    // Allocate notification structures - must be zeroed!
+    // Allocate zeroed structures
     var req: linux.SECCOMP.notif = std.mem.zeroes(linux.SECCOMP.notif);
     var resp: linux.SECCOMP.notif_resp = std.mem.zeroes(linux.SECCOMP.notif_resp);
 
-    while (true) {
+    while (true) : ({
+        // On continue, re-zero buffers
+        req = std.mem.zeroes(linux.SECCOMP.notif);
+        resp = std.mem.zeroes(linux.SECCOMP.notif_resp);
+    }) {
         // Receive notification
-        const recv_result = linux.syscall3(
-            .ioctl,
-            @as(usize, @intCast(notify_fd)),
-            linux.SECCOMP.IOCTL_NOTIF.RECV,
-            @intFromPtr(&req),
+        _ = try unwrap_result(
+            linux.ioctl(notify_fd, linux.SECCOMP.IOCTL_NOTIF.RECV, @intFromPtr(&req)),
         );
-
-        if (recv_result > std.math.maxInt(isize)) {
-            const errno: u16 = @truncate(~recv_result +% 1);
-            if (errno == 3) { // ESRCH - child exited
-                std.debug.print("Child exited, stopping notification handler\n", .{});
-                break;
-            }
-            std.debug.print("NOTIF_RECV failed, errno = {}\n", .{errno});
-            break;
-        }
 
         std.debug.print("Intercepted syscall {} from pid {}, id={}\n", .{ req.data.nr, req.pid, req.id });
 
         // Allow the syscall to proceed (passthrough mode)
-        resp = std.mem.zeroes(linux.SECCOMP.notif_resp); // re-zero each time
         resp.id = req.id;
         resp.@"error" = 0;
         resp.val = 0;
         resp.flags = linux.SECCOMP.USER_NOTIF_FLAG_CONTINUE;
 
-        const send_result = linux.syscall3(
-            .ioctl,
-            @as(usize, @intCast(notify_fd)),
-            linux.SECCOMP.IOCTL_NOTIF.SEND,
-            @intFromPtr(&resp),
+        _ = try unwrap_result(
+            linux.ioctl(notify_fd, linux.SECCOMP.IOCTL_NOTIF.SEND, @intFromPtr(&resp)),
         );
 
-        if (send_result > std.math.maxInt(isize)) {
-            const errno: u16 = @truncate(~send_result +% 1);
-            std.debug.print("NOTIF_SEND failed, errno = {}\n", .{errno});
-            break;
-        }
-        std.debug.print("NOTIF_SEND succeeded\n", .{});
-
-        // Re-zero req for next iteration
-        req = std.mem.zeroes(linux.SECCOMP.notif);
+        std.debug.print("Passe through syscall {}\n", .{req.data.nr});
     }
 }
