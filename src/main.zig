@@ -92,7 +92,7 @@ fn child_process(socket: FD) !void {
     };
 
     // Install program using seccomp
-    const notify_fd: FD = try unwrap_result(
+    const notify_fd: FD = try resultToFd(
         linux.seccomp(
             linux.SECCOMP.SET_MODE_FILTER,
             linux.SECCOMP.FILTER_FLAG.NEW_LISTENER,
@@ -117,13 +117,20 @@ fn child_process(socket: FD) !void {
     std.debug.print("Child done!\n", .{});
 }
 
-fn unwrap_result(result: usize) !i32 {
-    if (result > std.math.maxInt(isize)) {
-        // todo: cleaner prints
-        std.debug.print("result unwrap failed\n", .{});
-        return error.ResultUnwrapFailed;
-    }
-    return @intCast(result);
+/// Convert a linux syscall result (usize) to an error union with proper errno handling
+fn resultToFd(result: usize) posix.UnexpectedError!FD {
+    return switch (linux.errno(result)) {
+        .SUCCESS => @intCast(result),
+        else => |err| posix.unexpectedErrno(err),
+    };
+}
+
+/// Same but returns usize for non-fd results
+fn resultOk(result: usize) posix.UnexpectedError!usize {
+    return switch (linux.errno(result)) {
+        .SUCCESS => result,
+        else => |err| posix.unexpectedErrno(err),
+    };
 }
 
 fn supervisor_process(socket: FD, child_pid: linux.pid_t) !void {
@@ -150,7 +157,7 @@ fn supervisor_process(socket: FD, child_pid: linux.pid_t) !void {
     const child_notify_fd: FD = std.mem.readInt(i32, &child_notify_fd_bytes, .little);
 
     // Use child PID to look up its FD table
-    const child_fd_table: FD = try unwrap_result(
+    const child_fd_table: FD = try resultToFd(
         linux.pidfd_open(child_pid, 0),
     );
 
@@ -159,27 +166,21 @@ fn supervisor_process(socket: FD, child_pid: linux.pid_t) !void {
     var notify_fd: FD = undefined;
     var attempts: u32 = 0;
     while (attempts < 100) : (attempts += 1) {
-        // Try to get the notify FD from the child's FD table
-        // This is the FD visible from our supervisor process
-        const notify_fd_result = linux.pidfd_getfd(
-            child_fd_table,
-            child_notify_fd,
-            0,
-        );
-        std.debug.print("fd{d} @pid{d} should soon be visible\n", .{ child_notify_fd, child_pid });
-        if (notify_fd_result > std.math.maxInt(isize)) {
-            // two's compliment ints, so this means a negative code
-            // TODO: extract specifically the fd not exists code
-            std.debug.print("fd{d} @pid{d} not found, retrying...\n", .{ child_notify_fd, child_pid });
-            try io.sleep(std.Io.Duration.fromMilliseconds(10), .awake);
-            continue;
+        const result = linux.pidfd_getfd(child_fd_table, child_notify_fd, 0);
+        switch (linux.errno(result)) {
+            .SUCCESS => {
+                notify_fd = @intCast(result);
+                std.debug.print("Got notify fd: {} (attempt {})\n", .{ notify_fd, attempts + 1 });
+                break;
+            },
+            .BADF => {
+                // FD doesn't exist yet in child - retry
+                try io.sleep(std.Io.Duration.fromMilliseconds(10), .awake);
+                continue;
+            },
+            else => |err| return posix.unexpectedErrno(err),
         }
-
-        notify_fd = @intCast(notify_fd_result);
-        std.debug.print("fd{d} @pid{d} = {d}\n", .{ child_notify_fd, child_pid, notify_fd });
-        break;
     } else {
-        std.debug.print("pidfd_getfd failed after {} attempts\n", .{attempts});
         return error.PidfdGetfdFailed;
     }
 
@@ -200,9 +201,16 @@ fn handle_notifications(notify_fd: FD) !void {
         resp = std.mem.zeroes(linux.SECCOMP.notif_resp);
     }) {
         // Receive notification
-        _ = try unwrap_result(
-            linux.ioctl(notify_fd, linux.SECCOMP.IOCTL_NOTIF.RECV, @intFromPtr(&req)),
-        );
+        const recv_result = linux.ioctl(notify_fd, linux.SECCOMP.IOCTL_NOTIF.RECV, @intFromPtr(&req));
+        switch (linux.errno(recv_result)) {
+            .SUCCESS => {},
+            .NOENT => {
+                // Thrown when child exits
+                std.debug.print("Child exited, stopping notification handler\n", .{});
+                break;
+            },
+            else => |err| return posix.unexpectedErrno(err),
+        }
 
         std.debug.print("Intercepted syscall {} from pid {}, id={}\n", .{ req.data.nr, req.pid, req.id });
 
@@ -212,10 +220,10 @@ fn handle_notifications(notify_fd: FD) !void {
         resp.val = 0;
         resp.flags = linux.SECCOMP.USER_NOTIF_FLAG_CONTINUE;
 
-        _ = try unwrap_result(
+        _ = try resultOk(
             linux.ioctl(notify_fd, linux.SECCOMP.IOCTL_NOTIF.SEND, @intFromPtr(&resp)),
         );
 
-        std.debug.print("Passe through syscall {}\n", .{req.data.nr});
+        std.debug.print("Pass through syscall {}\n", .{req.data.nr});
     }
 }
