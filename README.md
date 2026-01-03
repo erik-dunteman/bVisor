@@ -1,8 +1,8 @@
 ### bVisor is an in-process linux sandbox.
 
-bVisor is an SDK and sandbox runtime for securely running Linux workloads, locally.
+bVisor is an SDK and runtime for securely running Linux sandboxes, locally.
 
-Inspired by [gVisor](https://github.com/google/gVisor), bVisor runs workloads directly on the host machine, providing isolation by intercepting and virtualizing [Linux Syscalls](https://en.wikipedia.org/wiki/System_call) from userspace, allowing for sacure and isolated I/O without the overhead of a virtual machine.
+Inspired by [gVisor](https://github.com/google/gVisor), bVisor runs workloads directly on the host machine, providing isolation by intercepting and virtualizing [linux syscalls](https://en.wikipedia.org/wiki/System_call) from userspace, allowing for secure and isolated I/O without the overhead of a virtual machine or remote infra.
 
 Unlike gVisor, bVisor is built to run directly in your application, spinning up and tearing down sandboxes in milliseconds. This makes it ideal for ephemeral tasks commonly performed by LLM agents, such as code execution or filesystem operations.
 
@@ -76,6 +76,7 @@ At a high level:
   - [ ] (to my knowledge, macOS does not have a seccomp user notifier equivalent)
 
 - [ ] SDK
+- 
   - [ ] Compile runtime for distribution 
   - [ ] Python SDK
     - [ ] Bindings
