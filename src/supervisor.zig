@@ -39,17 +39,6 @@ pub fn deinit(self: *Self) void {
     }
 }
 
-/// Test-only init that doesn't require a real notify_fd
-pub fn initForTesting(allocator: std.mem.Allocator) Self {
-    return .{
-        .notify_fd = -1, // Invalid FD, won't be used in tests
-        .child_pid = 0, // Dummy PID for testing
-        .logger = Logger.init(.supervisor),
-        .mem_bridge = MemoryBridge.init(0), // Dummy PID, TestingMemoryBridge ignores it
-        .filesystem = VirtualFileSystem.init(allocator),
-    };
-}
-
 /// Main notification loop. Reads syscall notifications from the kernel,
 pub fn run(self: *Self) !void {
     while (true) {
@@ -104,7 +93,11 @@ fn makeNotif(syscall_nr: linux.SYS, args: struct { arg0: u64 = 0, arg1: u64 = 0,
 }
 
 test "openat with O_CREAT creates virtual FD" {
-    var supervisor = Self.initForTesting(testing.allocator);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var supervisor = Self.init(-1, 0, testing.allocator, io);
     defer supervisor.deinit();
 
     // Path buffer in local memory (TestingMemoryBridge reads it directly)
@@ -128,7 +121,11 @@ test "openat with O_CREAT creates virtual FD" {
 }
 
 test "openat read-only on missing file passthroughs" {
-    var supervisor = Self.initForTesting(testing.allocator);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var supervisor = Self.init(-1, 0, testing.allocator, io);
     defer supervisor.deinit();
 
     const path_buf = "/missing.txt";
@@ -149,7 +146,11 @@ test "openat read-only on missing file passthroughs" {
 }
 
 test "write to virtual FD returns bytes written" {
-    var supervisor = Self.initForTesting(testing.allocator);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var supervisor = Self.init(-1, 0, testing.allocator, io);
     defer supervisor.deinit();
 
     // First open a file
@@ -183,7 +184,11 @@ test "write to virtual FD returns bytes written" {
 }
 
 test "write to stdout (fd=1) passthroughs" {
-    var supervisor = Self.initForTesting(testing.allocator);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var supervisor = Self.init(-1, 0, testing.allocator, io);
     defer supervisor.deinit();
 
     const write_buf = "hello";
@@ -202,7 +207,11 @@ test "write to stdout (fd=1) passthroughs" {
 }
 
 test "write to stderr (fd=2) passthroughs" {
-    var supervisor = Self.initForTesting(testing.allocator);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var supervisor = Self.init(-1, 0, testing.allocator, io);
     defer supervisor.deinit();
 
     const write_buf = "error";
@@ -221,7 +230,11 @@ test "write to stderr (fd=2) passthroughs" {
 }
 
 test "write to unknown FD passthroughs" {
-    var supervisor = Self.initForTesting(testing.allocator);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var supervisor = Self.init(-1, 0, testing.allocator, io);
     defer supervisor.deinit();
 
     const write_buf = "hello";
@@ -240,7 +253,11 @@ test "write to unknown FD passthroughs" {
 }
 
 test "close virtual FD returns success" {
-    var supervisor = Self.initForTesting(testing.allocator);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var supervisor = Self.init(-1, 0, testing.allocator, io);
     defer supervisor.deinit();
 
     // First open a file
@@ -271,7 +288,11 @@ test "close virtual FD returns success" {
 }
 
 test "close stdin (fd=0) passthroughs" {
-    var supervisor = Self.initForTesting(testing.allocator);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var supervisor = Self.init(-1, 0, testing.allocator, io);
     defer supervisor.deinit();
 
     const notif = makeNotif(.close, .{
@@ -287,7 +308,11 @@ test "close stdin (fd=0) passthroughs" {
 }
 
 test "read from virtual FD returns data" {
-    var supervisor = Self.initForTesting(testing.allocator);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var supervisor = Self.init(-1, 0, testing.allocator, io);
     defer supervisor.deinit();
 
     // Open a file for writing
@@ -342,7 +367,11 @@ test "read from virtual FD returns data" {
 }
 
 test "read from stdin (fd=0) passthroughs" {
-    var supervisor = Self.initForTesting(testing.allocator);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var supervisor = Self.init(-1, 0, testing.allocator, io);
     defer supervisor.deinit();
 
     var read_buf: [32]u8 = undefined;
@@ -361,7 +390,11 @@ test "read from stdin (fd=0) passthroughs" {
 }
 
 test "read from unknown FD passthroughs" {
-    var supervisor = Self.initForTesting(testing.allocator);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var supervisor = Self.init(-1, 0, testing.allocator, io);
     defer supervisor.deinit();
 
     var read_buf: [32]u8 = undefined;

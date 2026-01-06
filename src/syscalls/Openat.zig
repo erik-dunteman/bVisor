@@ -85,11 +85,15 @@ pub fn handle(self: Self, supervisor: *Supervisor) !Result {
     var host_mode: u32 = self.mode;
     var content_buf: [4096]u8 = undefined;
 
-    if (std.fs.openFileAbsolute(path, .{})) |host_file| {
-        defer host_file.close();
-        const stat = host_file.stat() catch null;
-        if (stat) |s| host_mode = @truncate(s.mode);
-        const bytes_read = host_file.readAll(&content_buf) catch 0;
+    const io = supervisor.io;
+    if (std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only })) |host_file| {
+        defer host_file.close(io);
+        if (host_file.stat(io)) |s| {
+            host_mode = s.permissions.toMode();
+        } else |_| {}
+        var file_reader = host_file.reader(io, &.{});
+        const reader = &file_reader.interface;
+        const bytes_read = reader.readSliceShort(&content_buf) catch 0;
         if (bytes_read > 0) host_content = content_buf[0..bytes_read];
         logger.log("openat: COW read {d} bytes from host", .{bytes_read});
     } else |_| {
