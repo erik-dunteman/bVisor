@@ -39,7 +39,7 @@ pub fn parse(mem_bridge: MemoryBridge, notif: linux.SECCOMP.notif) !Self {
 
 pub fn handle(self: Self, supervisor: *Supervisor) !Result {
     const logger = supervisor.logger;
-    const filesystem = &supervisor.filesystem;
+    const overlay = &supervisor.overlay;
 
     logger.log("Emulating readv: fd={d} iovcnt={d} total_len={d}", .{
         self.fd,
@@ -47,27 +47,28 @@ pub fn handle(self: Self, supervisor: *Supervisor) !Result {
         self.total_len,
     });
 
-    // stdin passthrough
-    if (self.fd == 0) {
-        logger.log("readv: passthrough for fd=0 (stdin)", .{});
+    // Check if FD is tracked by overlay (including redirected stdio)
+    if (overlay.hasFD(self.fd)) {
+        // FD is in overlay - handle it
+    } else if (self.fd >= 0 and self.fd <= 2) {
+        // Real stdio (not redirected) - passthrough
+        logger.log("readv: passthrough for stdio fd={d}", .{self.fd});
         return .{ .passthrough = {} };
+    } else {
+        // Unknown FD > 2 - return EBADF (full virtualization)
+        logger.log("readv: EBADF for unknown fd={d}", .{self.fd});
+        return .{ .handled = Result.Handled.err(.BADF) };
     }
 
-    // Check FDBackend - passthrough for kernel FDs or unknown FDs
-    const kind = filesystem.getFDBackend(self.fd);
-    if (kind == null or std.meta.activeTag(kind.?) == .kernel) {
-        logger.log("readv: passthrough for kernel/unknown fd={d}", .{self.fd});
-        return .{ .passthrough = {} };
-    }
-
-    // Read from virtual filesystem into local buffer
+    // Read from overlay
     const read_len = @min(self.total_len, 4096);
     var local_buf: [4096]u8 = undefined;
-    const bytes_read = filesystem.read(self.fd, local_buf[0..read_len]) catch |err| {
+    const bytes_read = overlay.read(self.fd, local_buf[0..read_len]) catch |err| {
         logger.log("readv failed: {}", .{err});
         return switch (err) {
+            error.BadFD => .{ .handled = Result.Handled.err(.BADF) },
             error.NotOpenForReading => .{ .handled = Result.Handled.err(.BADF) },
-            error.KernelFD => .{ .passthrough = {} },
+            error.Canceled => .{ .handled = Result.Handled.err(.INTR) },
             else => .{ .handled = Result.Handled.err(.IO) },
         };
     };
@@ -87,6 +88,6 @@ pub fn handle(self: Self, supervisor: *Supervisor) !Result {
         }
     }
 
-    logger.log("readv: read {d} bytes from virtual fd={d}", .{ bytes_read, self.fd });
+    logger.log("readv: read {d} bytes from fd={d}", .{ bytes_read, self.fd });
     return .{ .handled = Result.Handled.success(@intCast(bytes_read)) };
 }

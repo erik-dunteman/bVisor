@@ -7,9 +7,20 @@ const Result = types.LinuxResult;
 const MemoryBridge = types.MemoryBridge;
 const Logger = types.Logger;
 const Supervisor = @import("Supervisor.zig");
+const Cgroups = @import("cgroups.zig");
 
 /// Run an external command in the sandbox
-pub fn runCommand(argv: []const [:0]const u8) !void {
+pub fn runCommand(argv: []const [:0]const u8, cgroup_config: Cgroups.Config, allocator: std.mem.Allocator) !void {
+    _ = &cgroup_config; // Used in parent branch after fork
+    const logger = Logger.init(.prefork);
+
+    // Cgroup will be set up after fork with the child PID
+    var cgroup: ?Cgroups = null;
+    defer if (cgroup) |*cg| {
+        cg.cleanup();
+        cg.deinit();
+    };
+
     const socket_pair: [2]FD = try posix.socketpair(
         linux.AF.UNIX,
         linux.SOCK.STREAM,
@@ -20,11 +31,37 @@ pub fn runCommand(argv: []const [:0]const u8) !void {
     const fork_result = try std.posix.fork();
     if (fork_result == 0) {
         posix.close(supervisor_sock);
-        try child_process_exec(child_sock, argv);
+        try childProcessExec(child_sock, argv);
     } else {
         posix.close(child_sock);
         const child_pid: linux.pid_t = fork_result;
-        try supervisor_process(supervisor_sock, child_pid);
+
+        // Set up cgroup with child PID as unique name
+        if (cgroup_config.hasLimits()) {
+            var name_buf: [32]u8 = undefined;
+            const name = std.fmt.bufPrint(&name_buf, "{d}", .{child_pid}) catch "sandbox";
+            cgroup = Cgroups.init(allocator, name, cgroup_config) catch |err| {
+                logger.log("Warning: cgroup init failed: {} (continuing without cgroups)", .{err});
+                return try supervisorProcess(supervisor_sock, child_pid);
+            };
+
+            if (cgroup) |*cg| {
+                logger.log("Setting up cgroup: {s}", .{cg.cgroup_path});
+                cg.setup() catch |err| {
+                    logger.log("Warning: cgroup setup failed: {} (continuing without cgroups)", .{err});
+                    cg.deinit();
+                    cgroup = null;
+                };
+            }
+
+            if (cgroup) |*cg| {
+                cg.addProcess(child_pid) catch |err| {
+                    logger.log("Warning: failed to add process to cgroup: {}", .{err});
+                };
+            }
+        }
+
+        try supervisorProcess(supervisor_sock, child_pid);
     }
 }
 
@@ -43,14 +80,14 @@ pub fn run(runnable: *const fn (io: std.Io) void) !void {
     if (fork_result == 0) {
         // Child process
         posix.close(supervisor_sock);
-        try child_process(child_sock, runnable);
+        try childProcess(child_sock, runnable);
     } else {
         // Supervisor process
         posix.close(child_sock);
 
         // fork_result is the child PID, needed for looking up the notify FD
         const child_pid: linux.pid_t = fork_result;
-        try supervisor_process(supervisor_sock, child_pid);
+        try supervisorProcess(supervisor_sock, child_pid);
     }
 }
 
@@ -66,7 +103,103 @@ const BPFFilterProgram = extern struct {
     filter: [*]const BPFInstruction,
 };
 
-fn child_process(socket: FD, runnable: *const fn (io: std.Io) void) !void {
+// BPF instruction helpers
+const BPF = linux.BPF;
+const SECCOMP_RET = linux.SECCOMP.RET;
+
+// Blocked syscalls - these are dangerous and should return -EPERM
+// Phase 3.1: Escape syscalls
+// Phase 3.2: Privilege syscalls
+// Phase 3.3: Kernel manipulation
+// Phase 3.4: Dangerous misc
+const blocked_syscalls = [_]linux.SYS{
+    // Phase 3.1: Escape syscalls
+    .mount,
+    .umount2,
+    .pivot_root,
+    .chroot,
+    .setns,
+    .unshare,
+    .ptrace,
+    // Phase 3.2: Privilege syscalls
+    .setuid,
+    .setgid,
+    .setreuid,
+    .setregid,
+    .setresuid,
+    .setresgid,
+    .setgroups,
+    // Phase 3.3: Kernel manipulation
+    .init_module,
+    .finit_module,
+    .delete_module,
+    .kexec_load,
+    .kexec_file_load,
+    // Phase 3.4: Dangerous misc
+    .reboot,
+    .swapon,
+    .swapoff,
+    .acct,
+    .perf_event_open,
+    .bpf,
+    .userfaultfd,
+    .io_uring_setup,
+    .io_uring_enter,
+    .io_uring_register,
+};
+
+/// Build BPF filter that blocks dangerous syscalls and sends rest to USER_NOTIF
+fn buildSeccompFilter(buf: []BPFInstruction) []BPFInstruction {
+    var i: usize = 0;
+
+    // Load syscall number: LD [0] (offset 0 = nr field in seccomp_data)
+    buf[i] = .{
+        .code = BPF.LD | BPF.W | BPF.ABS,
+        .jt = 0,
+        .jf = 0,
+        .k = 0, // offset of nr in seccomp_data
+    };
+    i += 1;
+
+    // For each blocked syscall, add a jump-if-equal to the ERRNO return
+    // Jump targets: jt = distance to ERRNO ret, jf = 0 (continue)
+    const num_blocked = blocked_syscalls.len;
+    for (blocked_syscalls, 0..) |syscall, idx| {
+        // Distance to ERRNO return: remaining comparisons + 1 (for USER_NOTIF ret)
+        const remaining = num_blocked - idx - 1;
+        const jump_to_errno: u8 = @intCast(remaining + 1);
+
+        buf[i] = .{
+            .code = BPF.JMP | BPF.JEQ | BPF.K,
+            .jt = jump_to_errno, // jump to ERRNO if equal
+            .jf = 0, // continue to next check
+            .k = @truncate(@intFromEnum(syscall)),
+        };
+        i += 1;
+    }
+
+    // Default: return USER_NOTIF (allow syscall to be handled by supervisor)
+    buf[i] = .{
+        .code = BPF.RET | BPF.K,
+        .jt = 0,
+        .jf = 0,
+        .k = SECCOMP_RET.USER_NOTIF,
+    };
+    i += 1;
+
+    // Blocked syscall return: ERRNO | EPERM
+    buf[i] = .{
+        .code = BPF.RET | BPF.K,
+        .jt = 0,
+        .jf = 0,
+        .k = SECCOMP_RET.ERRNO | @as(u32, @intFromEnum(linux.E.PERM)),
+    };
+    i += 1;
+
+    return buf[0..i];
+}
+
+fn childProcess(socket: FD, runnable: *const fn (io: std.Io) void) !void {
     const logger = Logger.init(.child);
     logger.log("Child process starting", .{});
 
@@ -103,17 +236,15 @@ fn child_process(socket: FD, runnable: *const fn (io: std.Io) void) !void {
     _ = try posix.prctl(posix.PR.SET_NO_NEW_PRIVS, .{ 1, 0, 0, 0 });
     logger.log("Privilege elevation locked", .{});
 
-    // Write a BPF program that instructs the kernel to intercept all syscalls
-    // and trigger USER_NOTIF
-    var instructions = [_]BPFInstruction{
-        .{ .code = linux.BPF.RET | linux.BPF.K, .jt = 0, .jf = 0, .k = linux.SECCOMP.RET.USER_NOTIF },
-    };
+    // Build BPF program that blocks dangerous syscalls and sends rest to USER_NOTIF
+    var filter_buf: [blocked_syscalls.len + 3]BPFInstruction = undefined;
+    const filter = buildSeccompFilter(&filter_buf);
     var prog = BPFFilterProgram{
-        .len = instructions.len,
-        .filter = &instructions,
+        .len = @intCast(filter.len),
+        .filter = filter.ptr,
     };
 
-    logger.log("Entering seccomp mode", .{});
+    logger.log("Entering seccomp mode (blocking {d} dangerous syscalls)", .{blocked_syscalls.len});
 
     // Install program using seccomp
     const notify_fd: FD = try Result(FD).from(
@@ -136,7 +267,7 @@ fn child_process(socket: FD, runnable: *const fn (io: std.Io) void) !void {
     @call(.never_inline, runnable, .{io});
 }
 
-fn child_process_exec(socket: FD, argv: []const [:0]const u8) !void {
+fn childProcessExec(socket: FD, argv: []const [:0]const u8) !void {
     const logger = Logger.init(.child);
     logger.log("Child process starting (exec mode)", .{});
 
@@ -153,16 +284,15 @@ fn child_process_exec(socket: FD, argv: []const [:0]const u8) !void {
     _ = try posix.prctl(posix.PR.SET_NO_NEW_PRIVS, .{ 1, 0, 0, 0 });
     logger.log("Privilege elevation locked", .{});
 
-    // BPF program to intercept all syscalls
-    var instructions = [_]BPFInstruction{
-        .{ .code = linux.BPF.RET | linux.BPF.K, .jt = 0, .jf = 0, .k = linux.SECCOMP.RET.USER_NOTIF },
-    };
+    // Build BPF program that blocks dangerous syscalls and sends rest to USER_NOTIF
+    var filter_buf: [blocked_syscalls.len + 3]BPFInstruction = undefined;
+    const filter = buildSeccompFilter(&filter_buf);
     var prog = BPFFilterProgram{
-        .len = instructions.len,
-        .filter = &instructions,
+        .len = @intCast(filter.len),
+        .filter = filter.ptr,
     };
 
-    logger.log("Entering seccomp mode", .{});
+    logger.log("Entering seccomp mode (blocking {d} dangerous syscalls)", .{blocked_syscalls.len});
 
     // Install program using seccomp
     const notify_fd: FD = try Result(FD).from(
@@ -194,7 +324,7 @@ fn child_process_exec(socket: FD, argv: []const [:0]const u8) !void {
     std.debug.print("execve failed: {}\n", .{err});
 }
 
-fn supervisor_process(socket: FD, child_pid: linux.pid_t) !void {
+fn supervisorProcess(socket: FD, child_pid: linux.pid_t) !void {
     const logger = Logger.init(.supervisor);
     logger.log("Supervisor process starting", .{});
     defer logger.log("Supervisor process exiting", .{});

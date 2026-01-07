@@ -19,7 +19,7 @@ pub fn parse(mem_bridge: MemoryBridge, notif: linux.SECCOMP.notif) !Self {
 
 pub fn handle(self: Self, supervisor: *Supervisor) !Result {
     const logger = supervisor.logger;
-    const filesystem = &supervisor.filesystem;
+    const overlay = &supervisor.overlay;
 
     logger.log("Emulating close: fd={d}", .{self.fd});
 
@@ -29,16 +29,16 @@ pub fn handle(self: Self, supervisor: *Supervisor) !Result {
         return .{ .passthrough = {} };
     }
 
-    // Check FDBackend - passthrough for kernel FDs or unknown FDs
-    const kind = filesystem.getFDBackend(self.fd);
-    if (kind == null or std.meta.activeTag(kind.?) == .kernel) {
-        // Unknown or kernel FD - passthrough to kernel
-        logger.log("close: passthrough for kernel/unknown fd={d}", .{self.fd});
-        return .{ .passthrough = {} };
+    // Check if FD is tracked in overlay
+    const kind = overlay.getFDBackend(self.fd);
+    if (kind == null) {
+        // Unknown FD - return EBADF
+        logger.log("close: unknown fd={d}", .{self.fd});
+        return .{ .handled = Result.Handled.err(.BADF) };
     }
 
-    // Virtual FD - close in VFS
-    filesystem.close(self.fd);
-    logger.log("close: closed virtual fd={d}", .{self.fd});
+    // Close in overlay
+    overlay.close(self.fd);
+    logger.log("close: closed fd={d}", .{self.fd});
     return .{ .handled = Result.Handled.success(0) };
 }

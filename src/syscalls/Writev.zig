@@ -54,6 +54,7 @@ pub fn parse(mem_bridge: MemoryBridge, notif: linux.SECCOMP.notif) !Self {
 
 pub fn handle(self: Self, supervisor: *Supervisor) !Result {
     const logger = supervisor.logger;
+    const overlay = &supervisor.overlay;
 
     logger.log("Emulating writev: fd={d} iovcnt={d} total_bytes={d}", .{
         self.fd,
@@ -61,31 +62,31 @@ pub fn handle(self: Self, supervisor: *Supervisor) !Result {
         self.data_len,
     });
 
-    // stdout/stderr always passthrough
-    if (self.fd == 1 or self.fd == 2) {
-        logger.log("writev: passthrough for fd={d}", .{self.fd});
+    // Check if FD is tracked by overlay (including redirected stdio)
+    if (overlay.hasFD(self.fd)) {
+        // FD is in overlay - handle it
+    } else if (self.fd >= 0 and self.fd <= 2) {
+        // Real stdio (not redirected) - passthrough
+        logger.log("writev: passthrough for stdio fd={d}", .{self.fd});
         return .{ .passthrough = {} };
+    } else {
+        // Unknown FD > 2 - return EBADF (full virtualization)
+        logger.log("writev: EBADF for unknown fd={d}", .{self.fd});
+        return .{ .handled = Result.Handled.err(.BADF) };
     }
 
-    const filesystem = &supervisor.filesystem;
-
-    // Check FDBackend - passthrough for kernel FDs or unknown FDs
-    const kind = filesystem.getFDBackend(self.fd);
-    if (kind == null or std.meta.activeTag(kind.?) == .kernel) {
-        logger.log("writev: passthrough for kernel/unknown fd={d}", .{self.fd});
-        return .{ .passthrough = {} };
-    }
-
-    // Virtual FD - write to VFS
+    // Write to overlay (handles COW automatically)
     const data = self.data_buf[0..self.data_len];
-    const bytes_written = filesystem.write(self.fd, data) catch |err| {
+    const bytes_written = overlay.write(self.fd, data) catch |err| {
         logger.log("writev failed: {}", .{err});
         return switch (err) {
-            error.KernelFD => .{ .passthrough = {} },
-            else => .{ .handled = Result.Handled.err(.BADF) },
+            error.BadFD => .{ .handled = Result.Handled.err(.BADF) },
+            error.NotOpenForWriting => .{ .handled = Result.Handled.err(.BADF) },
+            error.Canceled => .{ .handled = Result.Handled.err(.INTR) },
+            else => .{ .handled = Result.Handled.err(.IO) },
         };
     };
 
-    logger.log("writev: wrote {d} bytes to virtual fd={d}", .{ bytes_written, self.fd });
+    logger.log("writev: wrote {d} bytes to fd={d}", .{ bytes_written, self.fd });
     return .{ .handled = Result.Handled.success(@intCast(bytes_written)) };
 }

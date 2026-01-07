@@ -31,6 +31,8 @@ pub fn LinuxResult(comptime T: type) type {
 }
 
 pub const Logger = struct {
+    const Self = @This();
+
     pub const Name = enum {
         prefork,
         child,
@@ -39,11 +41,11 @@ pub const Logger = struct {
 
     name: Name,
 
-    pub fn init(name: Name) @This() {
+    pub fn init(name: Name) Self {
         return .{ .name = name };
     }
 
-    pub fn log(self: @This(), comptime format: []const u8, args: anytype) void {
+    pub fn log(self: Self, comptime format: []const u8, args: anytype) void {
         // Disable logging during tests to avoid interfering with test runner IPC
         if (builtin.is_test) return;
 

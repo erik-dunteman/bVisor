@@ -1,6 +1,7 @@
 const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
+const LinuxResult = @import("../types.zig").LinuxResult;
 
 const Self = @This();
 
@@ -8,27 +9,6 @@ child_pid: linux.pid_t,
 
 pub fn init(child_pid: linux.pid_t) Self {
     return .{ .child_pid = child_pid };
-}
-
-fn LinuxResult(comptime T: type) type {
-    return union(enum) {
-        Ok: T,
-        Error: linux.E,
-
-        pub fn from(result: usize) @This() {
-            return switch (linux.errno(result)) {
-                .SUCCESS => @This(){ .Ok = @intCast(result) },
-                else => @This(){ .Error = linux.errno(result) },
-            };
-        }
-
-        pub fn unwrap(self: @This()) !T {
-            return switch (self) {
-                .Ok => |value| value,
-                .Error => error.SyscallFailed,
-            };
-        }
-    };
 }
 
 /// Read an object of type T from child_addr in child's address space

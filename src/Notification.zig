@@ -16,7 +16,7 @@ action: union(enum) {
 },
 
 /// Parse a linux.SECCOMP.notif into a Notification
-pub fn from_notif(mem_bridge: MemoryBridge, notif: linux.SECCOMP.notif) !Self {
+pub fn fromNotif(mem_bridge: MemoryBridge, notif: linux.SECCOMP.notif) !Self {
     const supported = try Syscall.parse(mem_bridge, notif);
 
     if (supported) |syscall| {
@@ -73,7 +73,7 @@ pub const Response = struct {
         };
     }
 
-    pub fn to_notif_resp(self: @This()) linux.SECCOMP.notif_resp {
+    pub fn toNotifResp(self: @This()) linux.SECCOMP.notif_resp {
         return switch (self.result) {
             .passthrough => .{
                 .id = self.id,
