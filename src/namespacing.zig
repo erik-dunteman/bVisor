@@ -12,64 +12,50 @@ const PID = union { kernel: KernelPID, virtual: VirtualPID };
 const VirtualPID = linux.pid_t;
 const KernelPID = linux.pid_t;
 
-const VirtualProcMap = std.AutoHashMapUnmanaged(KernelPID, *VirtualProc);
+const KernelToVirtualProcMap = std.AutoHashMapUnmanaged(KernelPID, *VirtualProc);
 const VirtualProcSet = std.AutoHashMapUnmanaged(*VirtualProc, void);
 
 const VirtualProc = struct {
     const Self = @This();
 
     pid: VirtualPID,
-    arena: ArenaAllocator,
     parent: ?*VirtualProc,
     children: VirtualProcSet = .empty,
 
-    /// Allocate a new VirtualProc, owned by caller's allocator
-    /// Any children will be owned by internal arena
-    fn init_owned(parent_allocator: Allocator, pid: VirtualPID, parent: ?*VirtualProc) !*Self {
-        // parent owns Self
-        // self owns children
-        const self = try parent_allocator.create(Self);
+    fn init(allocator: Allocator, pid: VirtualPID, parent: ?*VirtualProc) !*Self {
+        const self = try allocator.create(Self);
         self.* = .{
-            .arena = ArenaAllocator.init(parent_allocator),
             .pid = pid,
             .parent = parent,
         };
         return self;
     }
 
-    fn deinit(self: *Self, parent_allocator: Allocator) void {
-        // Deinit internal arena, which deinits all descendants
-        self.arena.deinit();
-
-        // Now deallocate self
-        parent_allocator.destroy(self);
+    fn deinit(self: *Self, allocator: Allocator) void {
+        allocator.destroy(self);
     }
 
-    /// Allocates a new child owned by self, and returns a pointer to its VirtualProc
-    /// Deinit on child is not mandatory, as arena deinit on self will free all children
-    fn init_child(self: *Self) !*Self {
+    fn init_child(self: *Self, allocator: Allocator) !*Self {
         // TODO: support different clone flags to determine what gets copied over from parent
-        const allocator = self.arena.allocator();
 
-        const child = try VirtualProc.init_owned(
+        const child = try VirtualProc.init(
             allocator,
-            try self.next_pid(),
+            try self.next_pid(allocator),
             self,
         );
-        errdefer allocator.destroy(child);
+        errdefer child.deinit(allocator);
 
         try self.children.put(allocator, child, {});
 
         return child;
     }
 
-    /// Not mandatory under the happy path, as self.arena deinit will free all children
-    fn deinit_child(self: *Self, child: *Self) void {
-        self.remove_child(child);
-        self.arena.allocator().destroy(child);
+    pub fn deinit_child(self: *Self, child: *Self, allocator: Allocator) void {
+        self.remove_child_link(child);
+        child.deinit(allocator);
     }
 
-    pub fn remove_child(self: *Self, child: *Self) void {
+    pub fn remove_child_link(self: *Self, child: *Self) void {
         _ = self.children.remove(child);
     }
 
@@ -82,8 +68,7 @@ const VirtualProc = struct {
         }
     }
 
-    pub fn next_pid(self: *Self) !VirtualPID {
-        const allocator = self.arena.allocator();
+    pub fn next_pid(self: *Self, allocator: Allocator) !VirtualPID {
         var desc = try std.ArrayList(*VirtualProc).initCapacity(allocator, 16);
         defer desc.deinit(allocator);
         try self.traverse_descendants(&desc, allocator);
@@ -107,7 +92,7 @@ const FlatMap = struct {
 
     // flat list of mappings from kernel to virtual PID
     // the VirtualProc pointed to may be arbitrarily nested
-    procs: VirtualProcMap = .empty,
+    procs: KernelToVirtualProcMap = .empty,
 
     const Self = @This();
 
@@ -129,12 +114,12 @@ const FlatMap = struct {
         const allocator = self.arena.allocator();
 
         const vpid = 1; // initial virtual PID always starts at 1
-        const initial = try VirtualProc.init_owned(
+        const initial = try VirtualProc.init(
             allocator,
             vpid,
             null,
         );
-        errdefer allocator.destroy(initial);
+        errdefer initial.deinit(allocator);
 
         try self.procs.put(allocator, pid, initial);
 
@@ -142,49 +127,49 @@ const FlatMap = struct {
     }
 
     pub fn register_child_proc(self: *Self, parent_pid: KernelPID, child_pid: KernelPID) !VirtualPID {
+        const allocator = self.arena.allocator();
         const parent: *VirtualProc = self.procs.get(parent_pid) orelse return error.KernelPIDNotFound;
-        const child = try parent.init_child();
-        errdefer parent.deinit_child(child);
+        const child = try parent.init_child(allocator);
+        errdefer parent.deinit_child(child, allocator);
 
-        try self.procs.put(self.arena.allocator(), child_pid, child);
+        try self.procs.put(allocator, child_pid, child);
 
         return child.pid;
     }
 
     pub fn kill_proc(self: *Self, pid: KernelPID) !void {
+        const allocator = self.arena.allocator();
+
         var target_proc = self.procs.get(pid) orelse return;
         const parent = target_proc.parent;
 
-        // recursively remove descendents, deepest first
-        var desc = try std.ArrayList(*VirtualProc).initCapacity(self.arena.allocator(), 16);
-        defer desc.deinit(self.arena.allocator());
-        try target_proc.traverse_descendants(&desc, self.arena.allocator());
-        for (desc.items) |child| {
-            // look up by value in procs map
-            var match_iter = self.procs.iterator();
-            while (match_iter.next()) |entry| {
+        // collect all descendents
+        var to_delete = try std.ArrayList(*VirtualProc).initCapacity(allocator, 16);
+        defer to_delete.deinit(allocator);
+        try target_proc.traverse_descendants(&to_delete, allocator);
+
+        // include target
+        try to_delete.append(allocator, target_proc);
+
+        // remove mappings from procs
+        for (to_delete.items) |child| {
+            var iter = self.procs.iterator();
+            while (iter.next()) |entry| {
                 if (entry.value_ptr.* == child) {
                     _ = self.procs.remove(entry.key_ptr.*);
-                    break;
                 }
             }
         }
-        // remove target_proc
-        var match_iter = self.procs.iterator();
-        while (match_iter.next()) |entry| {
-            if (entry.value_ptr.* == target_proc) {
-                _ = self.procs.remove(entry.key_ptr.*);
-                break;
-            }
-        }
 
+        // remove target from parent's children
         if (parent) |parent_proc| {
-            // remove target_proc from parent's children
-            parent_proc.remove_child(target_proc);
+            parent_proc.remove_child_link(target_proc);
         }
 
-        // now deinit target_proc, this deallocates itself and all descendents
-        target_proc.deinit(self.arena.allocator());
+        // mass-deinit
+        for (to_delete.items) |proc| {
+            proc.deinit(allocator);
+        }
     }
 
     // pub fn register_clone(self: *Self, parent: KernelPID, child: KernelPID) VirtualPID {}
