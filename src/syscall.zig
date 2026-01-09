@@ -29,16 +29,21 @@ pub const Syscall = union(enum) {
         };
     }
 
-    pub const Result = struct {
-        val: i64,
-        errno: i32,
+    pub const Result = union(enum) {
+        passthrough: void, // If the handler implementation decided to passthrough
+        handled: Handled,
 
-        pub fn success(val: i64) @This() {
-            return .{ .val = val, .errno = 0 };
-        }
+        pub const Handled = struct {
+            val: i64,
+            errno: i32,
 
-        pub fn err(errno: linux.E) @This() {
-            return .{ .val = 0, .errno = @intFromEnum(errno) };
-        }
+            pub fn success(val: i64) @This() {
+                return .{ .val = val, .errno = 0 };
+            }
+
+            pub fn err(errno: linux.E) @This() {
+                return .{ .val = 0, .errno = @intFromEnum(errno) };
+            }
+        };
     };
 };

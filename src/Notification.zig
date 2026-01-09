@@ -80,11 +80,19 @@ pub const Response = struct {
                 .val = 0,
                 .@"error" = 0,
             },
-            .emulated => |emulated| .{
-                .id = self.id,
-                .flags = 0,
-                .val = emulated.val,
-                .@"error" = emulated.errno,
+            .emulated => |emulated| switch (emulated) {
+                .passthrough => .{
+                    .id = self.id,
+                    .flags = linux.SECCOMP.USER_NOTIF_FLAG_CONTINUE,
+                    .val = 0,
+                    .@"error" = 0,
+                },
+                .handled => |handled| .{
+                    .id = self.id,
+                    .flags = 0,
+                    .val = handled.val,
+                    .@"error" = handled.errno,
+                },
             },
         };
     }

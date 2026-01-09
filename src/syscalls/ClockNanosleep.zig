@@ -36,7 +36,7 @@ pub fn handle(self: Self, mem_bridge: MemoryBridge, logger: Logger) !Result {
 
     if (err_code == .SUCCESS) {
         logger.log("clock_nanosleep completed successfully", .{});
-        return Result.success(0);
+        return .{ .handled = Result.Handled.success(0) };
     }
 
     if (err_code == .INTR and self.remain_ptr != 0) {
@@ -46,5 +46,5 @@ pub fn handle(self: Self, mem_bridge: MemoryBridge, logger: Logger) !Result {
         };
     }
 
-    return Result.err(err_code);
+    return .{ .handled = Result.Handled.err(err_code) };
 }

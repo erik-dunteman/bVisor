@@ -3,6 +3,10 @@ const types = @import("types.zig");
 const Logger = types.Logger;
 const run = @import("setup.zig").run;
 
+test {
+    _ = @import("namespacing.zig");
+}
+
 // Example child process, could be a bash command or anything else
 // For now we'll mock it with zig code
 fn example_child(io: std.Io) void {

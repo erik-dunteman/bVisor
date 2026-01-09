@@ -6,7 +6,7 @@ const FD = types.FD;
 const Result = types.LinuxResult;
 const MemoryBridge = types.MemoryBridge;
 const Logger = types.Logger;
-const Supervisor = @import("supervisor.zig");
+const Supervisor = @import("Supervisor.zig");
 
 pub fn run(runnable: *const fn (io: std.Io) void) !void {
     // Create socket pair for child and supervisor
