@@ -295,4 +295,13 @@ test "tree operations" {
     defer allocator.free(a_pids);
     try std.testing.expectEqual(4, a_pids.len);
     try std.testing.expectEqualSlices(VirtualPID, &[4]VirtualPID{ 1, 2, 3, 4 }, a_pids);
+
+    // clear whole tree
+    try flat_map.kill_proc(a_pid);
+    try std.testing.expectEqual(0, flat_map.procs.count());
+    try std.testing.expectEqual(null, flat_map.procs.get(a_pid));
+    try std.testing.expectEqual(null, flat_map.procs.get(b_pid));
+    try std.testing.expectEqual(null, flat_map.procs.get(b_pid_2));
+    try std.testing.expectEqual(null, flat_map.procs.get(c_pid));
+    try std.testing.expectEqual(null, flat_map.procs.get(d_pid));
 }
