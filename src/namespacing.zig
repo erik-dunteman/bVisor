@@ -305,3 +305,123 @@ test "tree operations" {
     try std.testing.expectEqual(null, flat_map.procs.get(c_pid));
     try std.testing.expectEqual(null, flat_map.procs.get(d_pid));
 }
+
+test "register_initial_proc fails if already registered" {
+    var flat_map = FlatMap.init(std.testing.allocator);
+    defer flat_map.deinit();
+
+    _ = try flat_map.register_initial_proc(100);
+    try std.testing.expectError(error.InitialProcessExists, flat_map.register_initial_proc(200));
+}
+
+test "register_child_proc fails with unknown parent" {
+    var flat_map = FlatMap.init(std.testing.allocator);
+    defer flat_map.deinit();
+
+    _ = try flat_map.register_initial_proc(100);
+    try std.testing.expectError(error.KernelPIDNotFound, flat_map.register_child_proc(999, 200));
+}
+
+test "kill_proc on non-existent pid is no-op" {
+    var flat_map = FlatMap.init(std.testing.allocator);
+    defer flat_map.deinit();
+
+    _ = try flat_map.register_initial_proc(100);
+    try flat_map.kill_proc(999);
+    try std.testing.expectEqual(1, flat_map.procs.count());
+}
+
+test "kill intermediate node removes subtree but preserves siblings" {
+    var flat_map = FlatMap.init(std.testing.allocator);
+    defer flat_map.deinit();
+
+    // a
+    // - b
+    // - c
+    //   - d
+    const a_pid = 10;
+    _ = try flat_map.register_initial_proc(a_pid);
+    const b_pid = 20;
+    _ = try flat_map.register_child_proc(a_pid, b_pid);
+    const c_pid = 30;
+    _ = try flat_map.register_child_proc(a_pid, c_pid);
+    const d_pid = 40;
+    _ = try flat_map.register_child_proc(c_pid, d_pid);
+
+    try std.testing.expectEqual(4, flat_map.procs.count());
+
+    // kill c (intermediate) - should also remove d but preserve a and b
+    try flat_map.kill_proc(c_pid);
+
+    try std.testing.expectEqual(2, flat_map.procs.count());
+    try std.testing.expect(flat_map.procs.get(a_pid) != null);
+    try std.testing.expect(flat_map.procs.get(b_pid) != null);
+    try std.testing.expectEqual(null, flat_map.procs.get(c_pid));
+    try std.testing.expectEqual(null, flat_map.procs.get(d_pid));
+}
+
+test "collect_tree on single node" {
+    const allocator = std.testing.allocator;
+    var flat_map = FlatMap.init(allocator);
+    defer flat_map.deinit();
+
+    _ = try flat_map.register_initial_proc(100);
+    const proc = flat_map.procs.get(100).?;
+
+    const pids = try proc.collect_tree_pids_sorted_owned(allocator);
+    defer allocator.free(pids);
+
+    try std.testing.expectEqual(1, pids.len);
+    try std.testing.expectEqual(1, pids[0]);
+}
+
+test "next_pid returns sequential when no gaps" {
+    const allocator = std.testing.allocator;
+    var flat_map = FlatMap.init(allocator);
+    defer flat_map.deinit();
+
+    _ = try flat_map.register_initial_proc(100);
+    const proc = flat_map.procs.get(100).?;
+
+    const next = try proc.next_pid(allocator);
+    try std.testing.expectEqual(2, next);
+}
+
+test "deep nesting" {
+    const allocator = std.testing.allocator;
+    var flat_map = FlatMap.init(allocator);
+    defer flat_map.deinit();
+
+    // chain: a -> b -> c -> d -> e
+    var kernel_pids = [_]KernelPID{ 10, 20, 30, 40, 50 };
+
+    _ = try flat_map.register_initial_proc(kernel_pids[0]);
+    for (1..5) |i| {
+        _ = try flat_map.register_child_proc(kernel_pids[i - 1], kernel_pids[i]);
+    }
+
+    try std.testing.expectEqual(5, flat_map.procs.count());
+
+    // kill middle (c) - should remove c, d, e
+    try flat_map.kill_proc(kernel_pids[2]);
+    try std.testing.expectEqual(2, flat_map.procs.count());
+}
+
+test "wide tree with many siblings" {
+    const allocator = std.testing.allocator;
+    var flat_map = FlatMap.init(allocator);
+    defer flat_map.deinit();
+
+    const parent_pid = 100;
+    _ = try flat_map.register_initial_proc(parent_pid);
+
+    // add 10 children
+    for (1..11) |i| {
+        const child_pid: KernelPID = @intCast(100 + i);
+        const vpid = try flat_map.register_child_proc(parent_pid, child_pid);
+        try std.testing.expectEqual(@as(VirtualPID, @intCast(i + 1)), vpid);
+    }
+
+    try std.testing.expectEqual(11, flat_map.procs.count());
+    try std.testing.expectEqual(10, flat_map.procs.get(parent_pid).?.children.size);
+}
