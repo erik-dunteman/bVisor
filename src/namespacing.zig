@@ -211,7 +211,7 @@ const FlatMap = struct {
     }
 };
 
-test "child proc initial state correct" {
+test "state is correct after initial proc" {
     var flat_map = FlatMap.init(std.testing.allocator);
     defer flat_map.deinit();
     try std.testing.expect(flat_map.procs.count() == 0);
@@ -228,7 +228,7 @@ test "child proc initial state correct" {
     try std.testing.expectEqual(0, proc.children.size);
 }
 
-test "tree operations" {
+test "gaps in pids are re-filled" {
     const allocator = std.testing.allocator;
     var flat_map = FlatMap.init(allocator);
     defer flat_map.deinit();
