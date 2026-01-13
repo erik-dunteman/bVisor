@@ -2,7 +2,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const types = @import("../../types.zig");
 const Logger = types.Logger;
-const Result = @import("../Syscall.zig").Syscall.Result;
+const Result = @import("../syscall.zig").Syscall.Result;
 const Supervisor = @import("../../Supervisor.zig");
 
 // comptime dependency injection

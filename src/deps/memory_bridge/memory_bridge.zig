@@ -7,5 +7,7 @@ else
 
 pub const read = impl.read;
 pub const readSlice = impl.readSlice;
+pub const readString = impl.readString;
 pub const write = impl.write;
 pub const writeSlice = impl.writeSlice;
+pub const writeString = impl.writeString;

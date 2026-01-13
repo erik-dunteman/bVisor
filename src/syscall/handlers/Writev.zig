@@ -3,7 +3,7 @@ const linux = std.os.linux;
 const posix = std.posix;
 const types = @import("../../types.zig");
 const FD = types.FD;
-const Result = @import("../Syscall.zig").Syscall.Result;
+const Result = @import("../syscall.zig").Syscall.Result;
 const Supervisor = @import("../../Supervisor.zig");
 
 // comptime dependency injection
@@ -15,8 +15,8 @@ const Self = @This();
 const MAX_IOV = 16;
 
 fd: FD,
-iov_ptr: u64,
-iovcnt: usize,
+iovec_ptr: u64,
+iovec_count: usize,
 // Store the iovec array and buffer data
 iovecs: [MAX_IOV]posix.iovec_const,
 // Total data to write (concatenated from all iovecs)
@@ -26,21 +26,21 @@ data_len: usize,
 pub fn parse(notif: linux.SECCOMP.notif) !Self {
     var self: Self = .{
         .fd = @bitCast(@as(u32, @truncate(notif.data.arg0))),
-        .iov_ptr = notif.data.arg1,
-        .iovcnt = @min(@as(usize, @truncate(notif.data.arg2)), MAX_IOV),
+        .iovec_ptr = notif.data.arg1,
+        .iovec_count = @min(@as(usize, @truncate(notif.data.arg2)), MAX_IOV),
         .iovecs = undefined,
         .data_buf = undefined,
         .data_len = 0,
     };
 
     // Read iovec array from child memory
-    for (0..self.iovcnt) |i| {
-        const iov_addr = self.iov_ptr + i * @sizeOf(posix.iovec_const);
+    for (0..self.iovec_count) |i| {
+        const iov_addr = self.iovec_ptr + i * @sizeOf(posix.iovec_const);
         self.iovecs[i] = try memory_bridge.read(posix.iovec_const, @intCast(notif.pid), iov_addr);
     }
 
     // Read buffer data from child memory for each iovec (one syscall per iovec)
-    for (0..self.iovcnt) |i| {
+    for (0..self.iovec_count) |i| {
         const iov = self.iovecs[i];
         const buf_ptr = @intFromPtr(iov.base);
         const buf_len = @min(iov.len, self.data_buf.len - self.data_len);
@@ -59,9 +59,9 @@ pub fn handle(self: Self, supervisor: *Supervisor) !Result {
     const logger = supervisor.logger;
     // TODO: supervisor.fs
 
-    logger.log("Emulating writev: fd={d} iovcnt={d} total_bytes={d}", .{
+    logger.log("Emulating writev: fd={d} iovec_count={d} total_bytes={d}", .{
         self.fd,
-        self.iovcnt,
+        self.iovec_count,
         self.data_len,
     });
 

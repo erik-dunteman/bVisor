@@ -7,11 +7,13 @@ const Supervisor = @import("../Supervisor.zig");
 // All supported syscalls
 const ClockNanosleep = @import("handlers/ClockNanosleep.zig");
 const Writev = @import("handlers/Writev.zig");
+const OpenAt = @import("handlers/OpenAt.zig");
 
 /// Union of all emulated syscalls.
 pub const Syscall = union(enum) {
     clock_nanosleep: ClockNanosleep,
     writev: Writev,
+    openat: OpenAt,
 
     const Self = @This();
 
@@ -22,7 +24,9 @@ pub const Syscall = union(enum) {
         switch (sys_code) {
             .clock_nanosleep => return .{ .clock_nanosleep = try ClockNanosleep.parse(notif) },
             .writev => return .{ .writev = try Writev.parse(notif) },
-            else => return null,
+            .openat => return .{ .openat = try OpenAt.parse(notif) },
+            else => return error.TemporarilyNotSupported,
+            // else => return null,
         }
     }
 
@@ -46,6 +50,10 @@ pub const Syscall = union(enum) {
 
             pub fn err(errno: linux.E) @This() {
                 return .{ .val = 0, .errno = @intFromEnum(errno) };
+            }
+
+            pub fn is_error(self: @This()) bool {
+                return self.errno != 0;
             }
         };
     };

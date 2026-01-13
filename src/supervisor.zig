@@ -19,7 +19,9 @@ pub fn init(notify_fd: FD, child_pid: linux.pid_t) Self {
 }
 
 pub fn deinit(self: Self) void {
-    posix.close(self.notify_fd);
+    if (self.notify_fd >= 0) {
+        posix.close(self.notify_fd);
+    }
 }
 
 /// Main notification loop. Reads syscall notifications from the kernel,
@@ -57,3 +59,7 @@ fn send(self: Self, resp: linux.SECCOMP.notif_resp) !void {
         linux.ioctl(self.notify_fd, linux.SECCOMP.IOCTL_NOTIF.SEND, @intFromPtr(&resp)),
     ).unwrap();
 }
+
+// E2E tests
+
+const testing = std.testing;

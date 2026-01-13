@@ -4,7 +4,9 @@ const Logger = types.Logger;
 const setup_and_run = @import("setup.zig").setup_and_run;
 
 test {
+    _ = @import("Supervisor.zig");
     _ = @import("virtual/proc/Procs.zig");
+    _ = @import("syscall/handlers/OpenAt.zig");
 }
 
 // Example child process, could be a bash command or anything else

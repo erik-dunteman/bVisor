@@ -2,7 +2,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const types = @import("../types.zig");
 const Logger = types.Logger;
-const Syscall = @import("../syscall/Syscall.zig").Syscall;
+const Syscall = @import("../syscall/syscall.zig").Syscall;
 const Supervisor = @import("../Supervisor.zig");
 
 /// Notification is a wrapper around linux.SECCOMP.notif
