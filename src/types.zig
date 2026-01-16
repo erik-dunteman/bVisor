@@ -1,8 +1,8 @@
 const std = @import("std");
 const linux = std.os.linux;
 
-// File Descriptor
-pub const FD = i32;
+// Kernel File Descriptor
+pub const KernelFD = i32;
 
 pub fn LinuxResult(comptime T: type) type {
     return union(enum) {

@@ -6,6 +6,8 @@ const setup_and_run = @import("setup.zig").setup_and_run;
 test {
     _ = @import("Supervisor.zig");
     _ = @import("virtual/proc/Procs.zig");
+    _ = @import("virtual/fs/FD.zig");
+    _ = @import("virtual/fs/FdTable.zig");
     _ = @import("syscall/handlers/OpenAt.zig");
 }
 

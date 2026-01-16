@@ -2,6 +2,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const Allocator = std.mem.Allocator;
 const Namespace = @import("Namespace.zig");
+const FdTable = @import("../fs/FdTable.zig");
 const VirtualPID = Namespace.VirtualPID;
 
 pub const KernelPID = linux.pid_t;
@@ -13,39 +14,49 @@ const Self = @This();
 
 pid: KernelPID,
 namespace: *Namespace,
+fd_table: *FdTable,
 vpid: VirtualPID,
 parent: ?*Self,
 children: ProcSet = .empty,
 
-pub fn init(allocator: Allocator, pid: KernelPID, namespace: ?*Namespace, parent: ?*Self) !*Self {
+pub fn init(allocator: Allocator, pid: KernelPID, namespace: ?*Namespace, fd_table: ?*FdTable, parent: ?*Self) !*Self {
+    // Create or use provided fd_table
+    const fdt = fd_table orelse try FdTable.init(allocator);
+    errdefer if (fd_table == null) fdt.unref();
+
     if (namespace) |ns| {
-        // proc inherits parent namespace
-        const vpid = ns.next_vpid();
+        // proc inherits parent namespace - acquire it
+        const ns_acquired = ns.ref();
+        errdefer ns_acquired.unref();
+
+        const vpid = ns_acquired.next_vpid();
         const self = try allocator.create(Self);
         self.* = .{
             .pid = pid,
-            .namespace = ns,
+            .namespace = ns_acquired,
+            .fd_table = fdt,
             .vpid = vpid,
             .parent = parent,
         };
         errdefer allocator.destroy(self);
 
         // register in own namespace and all ancestors
-        try ns.register_proc(allocator, self);
+        try ns_acquired.register_proc(allocator, self);
 
         return self;
     }
 
     // create this proc as root in a new namespace
     const parent_ns = if (parent) |p| p.namespace else null;
-    var ns = try Namespace.init(allocator, parent_ns);
-    errdefer ns.deinit(allocator);
+    const ns = try Namespace.init(allocator, parent_ns);
+    errdefer ns.unref();
 
     const vpid = ns.next_vpid();
     const self = try allocator.create(Self);
     self.* = .{
         .pid = pid,
         .namespace = ns,
+        .fd_table = fdt,
         .vpid = vpid,
         .parent = parent,
     };
@@ -68,10 +79,12 @@ pub fn deinit(self: *Self, allocator: Allocator) void {
     // unregister from own namespace and all ancestors
     self.namespace.unregister_proc(self);
 
-    if (self.is_namespace_root()) {
-        // the root Proc in a namespace is responsible for deallocating it
-        self.namespace.deinit(allocator);
-    }
+    // release namespace reference (will free if refcount hits 0)
+    self.namespace.unref();
+
+    // release fd_table reference (will free if refcount hits 0)
+    self.fd_table.unref();
+
     self.children.deinit(allocator);
     allocator.destroy(self);
 }
@@ -85,8 +98,8 @@ pub fn get_namespace_root(self: *Self) *Self {
     return current;
 }
 
-pub fn init_child(self: *Self, allocator: Allocator, pid: KernelPID, namespace: ?*Namespace) !*Self {
-    const child = try Self.init(allocator, pid, namespace, self);
+pub fn init_child(self: *Self, allocator: Allocator, pid: KernelPID, namespace: ?*Namespace, fd_table: ?*FdTable) !*Self {
+    const child = try Self.init(allocator, pid, namespace, fd_table, self);
     errdefer child.deinit(allocator);
 
     try self.children.put(allocator, child, {});

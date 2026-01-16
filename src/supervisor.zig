@@ -3,7 +3,7 @@ const linux = std.os.linux;
 const posix = std.posix;
 const types = @import("types.zig");
 const Notification = @import("seccomp/Notification.zig");
-const FD = types.FD;
+const KernelFD = types.KernelFD;
 const Result = types.LinuxResult;
 const Logger = types.Logger;
 const Procs = @import("virtual/proc/Procs.zig");
@@ -13,13 +13,13 @@ const Self = @This();
 
 allocator: Allocator,
 init_child_pid: linux.pid_t,
-notify_fd: FD,
+notify_fd: KernelFD,
 logger: Logger,
 // vfs: VFS, // TODO
 
 virtual_procs: Procs,
 
-pub fn init(allocator: Allocator, notify_fd: FD, child_pid: linux.pid_t) !Self {
+pub fn init(allocator: Allocator, notify_fd: KernelFD, child_pid: linux.pid_t) !Self {
     const logger = Logger.init(.supervisor);
     var virtual_procs = Procs.init(allocator);
     errdefer virtual_procs.deinit();

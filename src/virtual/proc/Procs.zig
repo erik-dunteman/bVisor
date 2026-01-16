@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 
 pub const Proc = @import("Proc.zig");
 pub const Namespace = @import("Namespace.zig");
+pub const FdTable = @import("../fs/FdTable.zig");
 pub const KernelPID = Proc.KernelPID;
 pub const VirtualPID = Namespace.VirtualPID;
 
@@ -35,6 +36,10 @@ pub const CloneFlags = struct {
 
     pub fn share_parent(self: CloneFlags) bool {
         return self.raw & linux.CLONE.PARENT != 0;
+    }
+
+    pub fn share_files(self: CloneFlags) bool {
+        return self.raw & linux.CLONE.FILES != 0;
     }
 };
 
@@ -69,8 +74,8 @@ pub fn deinit(self: *Self) void {
 pub fn handle_initial_process(self: *Self, pid: KernelPID) !VirtualPID {
     if (self.procs.size != 0) return error.InitialProcessExists;
 
-    // passing null namespace creates a new one
-    const root_proc = try Proc.init(self.allocator, pid, null, null);
+    // passing null namespace/fd_table creates new ones
+    const root_proc = try Proc.init(self.allocator, pid, null, null, null);
     errdefer root_proc.deinit(self.allocator);
 
     try self.procs.put(self.allocator, pid, root_proc);
@@ -89,7 +94,14 @@ pub fn handle_clone(self: *Self, parent_pid: KernelPID, child_pid: KernelPID, cl
     else
         parent.namespace;
 
-    const child = try parent.init_child(self.allocator, child_pid, namespace);
+    // CLONE_FILES shares the fd_table; otherwise clone it
+    const fd_table: *FdTable = if (clone_flags.share_files())
+        parent.fd_table.ref()
+    else
+        try parent.fd_table.clone();
+    errdefer fd_table.unref();
+
+    const child = try parent.init_child(self.allocator, child_pid, namespace, fd_table);
     errdefer parent.deinit_child(child, self.allocator);
 
     try self.procs.put(self.allocator, child_pid, child);

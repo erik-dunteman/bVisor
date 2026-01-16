@@ -1,11 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const linux = std.os.linux;
+const posix = std.posix;
 const Proc = @import("../../virtual/proc/Proc.zig");
 const Procs = @import("../../virtual/proc/Procs.zig");
+const FD = @import("../../virtual/fs/FD.zig").FD;
+const FdTable = @import("../../virtual/fs/FdTable.zig");
 const types = @import("../../types.zig");
 const Supervisor = @import("../../Supervisor.zig");
-const FD = types.FD;
+const KernelFD = types.KernelFD;
 const Result = @import("../syscall.zig").Syscall.Result;
 const testing = std.testing;
 const makeNotif = @import("../../seccomp/notif.zig").makeNotif;
@@ -16,10 +19,12 @@ const memory_bridge = deps.memory_bridge;
 
 const Self = @This();
 
-dirfd: FD,
+kernel_pid: Proc.KernelPID,
+dirfd: KernelFD,
 path_len: usize,
 path_buf: [256]u8, // fixed stack buffer, limits size of string read
 flags: linux.O,
+mode: linux.mode_t,
 
 pub fn path(self: *const Self) []const u8 {
     return self.path_buf[0..self.path_len];
@@ -43,14 +48,17 @@ pub fn parse(notif: linux.SECCOMP.notif) !Self {
         path_ptr,
     );
 
-    const dirfd: FD = @truncate(@as(i64, @bitCast(notif.data.arg0)));
+    const dirfd: KernelFD = @truncate(@as(i64, @bitCast(notif.data.arg0)));
     const flags: linux.O = @bitCast(@as(u32, @truncate(notif.data.arg2)));
+    const mode: linux.mode_t = @truncate(notif.data.arg3);
 
     return .{
+        .kernel_pid = @intCast(notif.pid),
         .dirfd = dirfd,
         .path_len = path_slice.len,
         .path_buf = path_buf,
         .flags = flags,
+        .mode = mode,
     };
 }
 
@@ -85,6 +93,9 @@ pub const fs_rules: []const PathRule = &.{
     .{ .prefix = "/sys/", .rule = .{ .terminal = .block } },
     .{ .prefix = "/run/", .rule = .{ .terminal = .block } },
 
+    // Allowed (passthrough)
+    .{ .prefix = "/tmp/", .rule = .{ .terminal = .allow } },
+
     // Virtualized
     .{ .prefix = "/proc/", .rule = .{ .terminal = .virtualize_proc } },
 };
@@ -111,14 +122,57 @@ fn resolveWithRules(path_str: []const u8, rules: []const PathRule, default: Acti
     return default;
 }
 
-/// Returns true if the path is absolute (starts with '/')
-pub fn isAbsolutePath(path_str: []const u8) bool {
-    return path_str.len > 0 and path_str[0] == '/';
-}
-
 /// Returns true if the flags indicate a write operation requiring VFS redirect
 pub fn useVFS(flags: linux.O) bool {
     return flags.ACCMODE == .WRONLY or flags.ACCMODE == .RDWR or flags.CREAT;
+}
+
+/// Convert linux.O flags to posix.O flags.
+/// Required because linux and darwin have different bit layouts for O flags.
+fn linuxOToPosixO(flags: linux.O) posix.O {
+    var result: posix.O = .{};
+
+    // Access mode (RDONLY=0, WRONLY=1, RDWR=2)
+    result.ACCMODE = switch (flags.ACCMODE) {
+        .RDONLY => .RDONLY,
+        .WRONLY => .WRONLY,
+        .RDWR => .RDWR,
+    };
+
+    // Individual flags
+    if (flags.CREAT) result.CREAT = true;
+    if (flags.EXCL) result.EXCL = true;
+    if (flags.NOCTTY) result.NOCTTY = true;
+    if (flags.TRUNC) result.TRUNC = true;
+    if (flags.APPEND) result.APPEND = true;
+    if (flags.NONBLOCK) result.NONBLOCK = true;
+    if (flags.DIRECTORY) result.DIRECTORY = true;
+    if (flags.NOFOLLOW) result.NOFOLLOW = true;
+    if (flags.CLOEXEC) result.CLOEXEC = true;
+    if (flags.SYNC) result.SYNC = true;
+
+    return result;
+}
+
+fn posixErrorToLinuxErrno(err: posix.OpenError) linux.E {
+    return switch (err) {
+        error.AccessDenied => .ACCES,
+        error.FileNotFound => .NOENT,
+        error.IsDir => .ISDIR,
+        error.NotDir => .NOTDIR,
+        error.PathAlreadyExists => .EXIST,
+        error.NoSpaceLeft => .NOSPC,
+        error.FileBusy => .BUSY,
+        error.NameTooLong => .NAMETOOLONG,
+        error.SymLinkLoop => .LOOP,
+        error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => .MFILE,
+        error.NoDevice => .NODEV,
+        error.SystemResources => .NOMEM,
+        error.FileTooBig => .FBIG,
+        error.WouldBlock => .AGAIN,
+        error.PermissionDenied => .PERM,
+        else => .IO,
+    };
 }
 
 pub fn handle(self: Self, supervisor: *Supervisor) !Result {
@@ -139,13 +193,79 @@ pub fn handle(self: Self, supervisor: *Supervisor) !Result {
         },
         .allow => {
             logger.log("openat: allowed path: {s}", .{self.path()});
-            return .{ .passthrough = {} };
+            return self.handleAllow(supervisor);
         },
         .virtualize_proc => {
             logger.log("openat: virtualizing proc path: {s}", .{self.path()});
-            return error.NotImplemented;
+            return self.handleVirtualizeProc(supervisor);
         },
     }
+}
+
+fn handleVirtualizeProc(self: Self, supervisor: *Supervisor) !Result {
+    const logger = supervisor.logger;
+
+    // Look up the calling process
+    const proc = supervisor.virtual_procs.procs.get(self.kernel_pid) orelse {
+        logger.log("openat: kernel pid {d} not found in virtual_procs", .{self.kernel_pid});
+        return .{ .handled = Result.Handled.err(linux.E.NOENT) };
+    };
+
+    // Parse the /proc path to get target vpid
+    const path_str = self.path();
+
+    var parts = std.mem.tokenizeScalar(u8, path_str, '/');
+    _ = parts.next(); // skip "proc"
+    const vpid_part = parts.next() orelse return .{ .handled = Result.Handled.err(linux.E.NOENT) };
+
+    // Determine target vpid
+    // Format: /proc/self/..., /proc/<vpid>/..., or global files like /proc/meminfo
+    const target_vpid: Procs.VirtualPID = if (std.mem.eql(u8, vpid_part, "self"))
+        proc.vpid
+    else
+        std.fmt.parseInt(Procs.VirtualPID, vpid_part, 10) catch
+            // Not a numeric vpid - global proc file (e.g., meminfo, cpuinfo)
+            // Use caller's vpid as placeholder
+            proc.vpid;
+
+    const virtual_fd = FD{ .proc = .{ .self = .{ .vpid = target_vpid } } };
+
+    // Insert into the process's fd_table and get virtual fd number
+    const vfd = try proc.fd_table.open(virtual_fd);
+
+    logger.log("openat: opened virtual fd={d}", .{vfd});
+
+    return .{ .handled = Result.Handled.success(@intCast(vfd)) };
+}
+
+fn handleAllow(self: Self, supervisor: *Supervisor) !Result {
+    const logger = supervisor.logger;
+
+    // Look up the calling process
+    const proc = supervisor.virtual_procs.procs.get(self.kernel_pid) orelse {
+        logger.log("openat: kernel pid {d} not found in virtual_procs", .{self.kernel_pid});
+        return .{ .handled = Result.Handled.err(linux.E.NOENT) };
+    };
+
+    // Perform the open ourselves using posix (works on both Linux and macOS for tests)
+    // Note: dirfd translation would be needed for relative paths with non-AT_FDCWD dirfd
+    const path_slice = self.path_buf[0..self.path_len :0];
+
+    // Convert linux.O flags to posix.O flags (different bit layouts on Linux vs Darwin)
+    const posix_flags = linuxOToPosixO(self.flags);
+
+    const kfd = posix.openat(self.dirfd, path_slice, posix_flags, @truncate(self.mode)) catch |err| {
+        const errno = posixErrorToLinuxErrno(err);
+        logger.log("openat: kernel open failed: {s}", .{@tagName(errno)});
+        return .{ .handled = Result.Handled.err(errno) };
+    };
+
+    // Store in fd_table as kernel fd
+    const vfd = try proc.fd_table.open(.{ .kernel = kfd });
+
+    logger.log("openat: opened kernel fd={d} as vfd={d}", .{ kfd, vfd });
+
+    return .{ .handled = Result.Handled.success(@intCast(vfd)) };
 }
 
 test "openat blocks private paths" {
@@ -156,7 +276,7 @@ test "openat blocks private paths" {
     _ = io;
 
     const child_pid: Proc.KernelPID = 345; // some arbitrary kernel PID
-    const notify_fd: FD = -1; // makes deinit ignore closing the fd
+    const notify_fd: KernelFD = -1; // makes deinit ignore closing the fd
 
     var supervisor = try Supervisor.init(allocator, notify_fd, child_pid);
     defer supervisor.deinit();
@@ -257,19 +377,6 @@ test "openat blocks /run/user paths" {
     try testing.expect(res.handled.is_error());
 }
 
-test "isAbsolutePath detects absolute paths" {
-    try testing.expect(isAbsolutePath("/foo"));
-    try testing.expect(isAbsolutePath("/"));
-    try testing.expect(isAbsolutePath("/proc/self"));
-}
-
-test "isAbsolutePath detects relative paths" {
-    try testing.expect(!isAbsolutePath("foo"));
-    try testing.expect(!isAbsolutePath("./foo"));
-    try testing.expect(!isAbsolutePath("../foo"));
-    try testing.expect(!isAbsolutePath(""));
-}
-
 test "useVFS detects write modes" {
     try testing.expect(!useVFS(linux.O{ .ACCMODE = .RDONLY }));
     try testing.expect(useVFS(linux.O{ .ACCMODE = .WRONLY }));
@@ -359,7 +466,7 @@ test "openat /proc/self resolves to vpid 2 for child process" {
     try testing.expect(!res.handled.is_error());
 }
 
-test "openat passthrough for read-only on /tmp" {
+test "openat handles allowed paths (returns NOENT for missing file)" {
     const allocator = std.testing.allocator;
     const child_pid: Proc.KernelPID = 100;
     var supervisor = try Supervisor.init(allocator, -1, child_pid);
@@ -368,16 +475,20 @@ test "openat passthrough for read-only on /tmp" {
     const notif = makeNotif(.openat, .{
         .pid = child_pid,
         .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
-        .arg1 = @intFromPtr("/tmp/test.txt"),
+        .arg1 = @intFromPtr("/tmp/nonexistent_test_file.txt"),
         .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .RDONLY }))),
     });
 
     const parsed = try Self.parse(notif);
     const res = try parsed.handle(&supervisor);
-    try testing.expect(res == .passthrough);
+    // Supervisor handles all opens now (no passthrough)
+    try testing.expect(res == .handled);
+    // File doesn't exist, so we get NOENT
+    try testing.expect(res.handled.is_error());
+    try testing.expectEqual(linux.E.NOENT, @as(linux.E, @enumFromInt(res.handled.errno)));
 }
 
-test "openat redirects to VFS for O_WRONLY on /tmp" {
+test "openat O_WRONLY on missing file returns NOENT" {
     const allocator = std.testing.allocator;
     const child_pid: Proc.KernelPID = 100;
     var supervisor = try Supervisor.init(allocator, -1, child_pid);
@@ -386,33 +497,88 @@ test "openat redirects to VFS for O_WRONLY on /tmp" {
     const notif = makeNotif(.openat, .{
         .pid = child_pid,
         .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
-        .arg1 = @intFromPtr("/tmp/test.txt"),
+        .arg1 = @intFromPtr("/tmp/nonexistent_test_file.txt"),
         .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .WRONLY }))),
     });
 
     const parsed = try Self.parse(notif);
     const res = try parsed.handle(&supervisor);
     try testing.expect(res == .handled);
-    try testing.expect(!res.handled.is_error());
+    // O_WRONLY without O_CREAT on nonexistent file should fail
+    try testing.expect(res.handled.is_error());
+    try testing.expectEqual(linux.E.NOENT, @as(linux.E, @enumFromInt(res.handled.errno)));
 }
 
-test "openat redirects to VFS for O_CREAT on /tmp" {
+test "openat O_CREAT creates file, write and read back" {
     const allocator = std.testing.allocator;
     const child_pid: Proc.KernelPID = 100;
     var supervisor = try Supervisor.init(allocator, -1, child_pid);
     defer supervisor.deinit();
 
-    const notif = makeNotif(.openat, .{
-        .pid = child_pid,
-        .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
-        .arg1 = @intFromPtr("/tmp/newfile.txt"),
-        .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .WRONLY, .CREAT = true }))),
-    });
+    const test_path = "/tmp/bvisor_test_creat.txt";
+    const test_content = "hello bvisor";
 
-    const parsed = try Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-    try testing.expect(res == .handled);
-    try testing.expect(!res.handled.is_error());
+    // Set up I/O for file operations
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Clean up any existing file first
+    std.Io.Dir.deleteFileAbsolute(io, test_path) catch {};
+    defer std.Io.Dir.deleteFileAbsolute(io, test_path) catch {};
+
+    // Step 1: Create and write to file
+    {
+        const notif = makeNotif(.openat, .{
+            .pid = child_pid,
+            .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
+            .arg1 = @intFromPtr(test_path),
+            .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .WRONLY, .CREAT = true }))),
+            .arg3 = 0o644,
+        });
+
+        const parsed = try Self.parse(notif);
+        const res = try parsed.handle(&supervisor);
+        try testing.expect(res == .handled);
+        try testing.expect(!res.handled.is_error());
+
+        const vfd: FdTable.VirtualFD = @intCast(res.handled.val);
+        try testing.expectEqual(@as(FdTable.VirtualFD, 3), vfd);
+
+        // Get the FD and write to it
+        const proc = supervisor.virtual_procs.procs.get(child_pid).?;
+        var fd = proc.fd_table.get(vfd).?;
+        const kfd = fd.kernel; // get the kernel fd
+        _ = try posix.write(kfd, test_content);
+        posix.close(kfd);
+        _ = proc.fd_table.remove(vfd);
+    }
+
+    // Step 2: Open for read and verify content
+    {
+        const notif = makeNotif(.openat, .{
+            .pid = child_pid,
+            .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
+            .arg1 = @intFromPtr(test_path),
+            .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .RDONLY }))),
+        });
+
+        const parsed = try Self.parse(notif);
+        const res = try parsed.handle(&supervisor);
+        try testing.expect(res == .handled);
+        try testing.expect(!res.handled.is_error());
+
+        const vfd: FdTable.VirtualFD = @intCast(res.handled.val);
+
+        // Read via FD.read
+        const proc = supervisor.virtual_procs.procs.get(child_pid).?;
+        var fd = proc.fd_table.get(vfd).?;
+        var buf: [64]u8 = undefined;
+        const n = try fd.read(&buf);
+        try testing.expectEqualStrings(test_content, buf[0..n]);
+
+        posix.close(fd.kernel);
+    }
 }
 
 test "resolve /proc/self triggers virtualize" {

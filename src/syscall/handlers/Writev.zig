@@ -2,7 +2,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
 const types = @import("../../types.zig");
-const FD = types.FD;
+const KernelFD = types.KernelFD;
 const Result = @import("../syscall.zig").Syscall.Result;
 const Supervisor = @import("../../Supervisor.zig");
 
@@ -14,7 +14,7 @@ const Self = @This();
 
 const MAX_IOV = 16;
 
-fd: FD,
+fd: KernelFD,
 iovec_ptr: u64,
 iovec_count: usize,
 // Store the iovec array and buffer data

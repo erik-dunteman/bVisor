@@ -3,7 +3,7 @@ const posix = std.posix;
 const linux = std.os.linux;
 const types = @import("types.zig");
 const seccomp = @import("seccomp/filter.zig");
-const FD = types.FD;
+const KernelFD = types.KernelFD;
 const Logger = types.Logger;
 const Supervisor = @import("Supervisor.zig");
 
@@ -13,7 +13,7 @@ const lookup_child_fd = deps.pidfd.lookup_child_fd_with_retry;
 
 pub fn setup_and_run(runnable: *const fn (io: std.Io) void) !void {
     // Create socket pair for IPC between child and supervisor
-    const socket_pair: [2]FD = try posix.socketpair(
+    const socket_pair: [2]KernelFD = try posix.socketpair(
         linux.AF.UNIX,
         linux.SOCK.STREAM,
         0,
@@ -33,7 +33,7 @@ pub fn setup_and_run(runnable: *const fn (io: std.Io) void) !void {
     }
 }
 
-fn child_process(socket: FD, runnable: *const fn (io: std.Io) void) !void {
+fn child_process(socket: KernelFD, runnable: *const fn (io: std.Io) void) !void {
     const logger = Logger.init(.child);
     logger.log("Child process starting", .{});
 
@@ -61,7 +61,7 @@ fn child_process(socket: FD, runnable: *const fn (io: std.Io) void) !void {
     @call(.never_inline, runnable, .{io});
 }
 
-fn supervisor_process(socket: FD, child_pid: linux.pid_t) !void {
+fn supervisor_process(socket: KernelFD, child_pid: linux.pid_t) !void {
     const logger = Logger.init(.supervisor);
     logger.log("Supervisor process starting", .{});
     defer logger.log("Supervisor process exiting", .{});
@@ -85,17 +85,17 @@ fn supervisor_process(socket: FD, child_pid: linux.pid_t) !void {
     try supervisor.run();
 }
 
-fn send_fd(socket: FD, fd: FD) !void {
+fn send_fd(socket: KernelFD, fd: KernelFD) !void {
     var fd_bytes: [4]u8 = undefined;
-    std.mem.writeInt(FD, &fd_bytes, fd, .little);
+    std.mem.writeInt(KernelFD, &fd_bytes, fd, .little);
     _ = try posix.write(socket, &fd_bytes);
 }
 
-fn recv_fd(socket: FD) !FD {
+fn recv_fd(socket: KernelFD) !KernelFD {
     var fd_bytes: [4]u8 = undefined;
     const bytes_read = try posix.read(socket, &fd_bytes);
     if (bytes_read != 4) {
         return error.FdReadFailed;
     }
-    return std.mem.readInt(FD, &fd_bytes, .little);
+    return std.mem.readInt(KernelFD, &fd_bytes, .little);
 }
