@@ -294,7 +294,6 @@ test "openat blocks private paths" {
     });
 
     const parsed = try Self.parse(notif);
-    std.debug.print("path: {s}\n", .{parsed.path()});
     try testing.expectEqualStrings("/sys/private.txt", parsed.path());
     const res = try parsed.handle(&supervisor);
     try testing.expect(res == .reply);

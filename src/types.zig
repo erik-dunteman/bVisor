@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const linux = std.os.linux;
 
 // Kernel File Descriptor
@@ -43,6 +44,8 @@ pub const Logger = struct {
     }
 
     pub fn log(self: @This(), comptime format: []const u8, args: anytype) void {
+        if (builtin.is_test) return;
+
         var buf: [1024]u8 = undefined;
         const fmtlog = std.fmt.bufPrint(&buf, format, args) catch unreachable;
         const color = switch (self.name) {
