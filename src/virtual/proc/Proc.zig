@@ -111,11 +111,6 @@ pub fn remove_child_link(self: *Self, child: *Self) void {
 }
 
 /// Check if this process can see the target process.
-/// A process can see another if the target is registered in this process's namespace.
-/// This happens when:
-/// - They are in the same namespace, OR
-/// - The target is in a descendant namespace (descendants register in all ancestor namespaces)
-/// Note: A process in a child namespace CANNOT see processes that are only in parent namespaces.
 pub fn can_see(self: *Self, target: *Self) bool {
     return self.namespace.contains(target);
 }

@@ -1,14 +1,17 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const linux = std.os.linux;
 const Allocator = std.mem.Allocator;
 
 pub const Proc = @import("Proc.zig");
 pub const Namespace = @import("Namespace.zig");
 pub const FdTable = @import("../fs/FdTable.zig");
-pub const PendingClones = @import("PendingClones.zig");
 pub const KernelPID = Proc.KernelPID;
 
 const ProcLookup = std.AutoHashMapUnmanaged(KernelPID, *Proc);
+
+// kcmp types from linux/kcmp.h
+const KCMP_FILES: u5 = 2;
 
 const Self = @This();
 
@@ -52,14 +55,8 @@ allocator: Allocator,
 // owns underlying procs
 lookup: ProcLookup = .empty,
 
-// stores clone flags until child is discovered
-pending_clones: PendingClones,
-
 pub fn init(allocator: Allocator) Self {
-    return .{
-        .allocator = allocator,
-        .pending_clones = PendingClones.init(allocator),
-    };
+    return .{ .allocator = allocator };
 }
 
 pub fn deinit(self: *Self) void {
@@ -75,7 +72,6 @@ pub fn deinit(self: *Self) void {
         }
     }
     self.lookup.deinit(self.allocator);
-    self.pending_clones.deinit();
 }
 
 /// Get a proc by kernel PID. If unknown, attempts lazy registration
@@ -92,8 +88,8 @@ fn register_from_kernel(self: *Self, child_pid: KernelPID) !*Proc {
     // Try to get parent - this may recursively register ancestors
     const parent = self.lookup.get(ppid) orelse return error.NotInSandbox;
 
-    // Get clone flags if stored, otherwise use defaults
-    const flags = self.pending_clones.remove(ppid) orelse CloneFlags{};
+    // Query kernel for actual clone flags used
+    const flags = detect_clone_flags(ppid, child_pid);
 
     return self.register_child(parent, child_pid, flags);
 }
@@ -180,6 +176,62 @@ fn read_ppid(pid: KernelPID) !KernelPID {
     }
 
     return error.CannotReadProc;
+}
+
+/// Detect clone flags by querying kernel state
+fn detect_clone_flags(parent_pid: KernelPID, child_pid: KernelPID) CloneFlags {
+    var flags: u64 = 0;
+
+    // Check CLONE_NEWPID via namespace inode comparison
+    if (!same_pid_namespace(parent_pid, child_pid)) {
+        flags |= linux.CLONE.NEWPID;
+    }
+
+    // Check CLONE_FILES via kcmp syscall
+    if (shares_fd_table(parent_pid, child_pid)) {
+        flags |= linux.CLONE.FILES;
+    }
+
+    return CloneFlags.from(flags);
+}
+
+/// Check if two processes share the same PID namespace
+fn same_pid_namespace(pid1: KernelPID, pid2: KernelPID) bool {
+    const ino1 = get_ns_inode(pid1, "pid") orelse return true;
+    const ino2 = get_ns_inode(pid2, "pid") orelse return true;
+    return ino1 == ino2;
+}
+
+/// Get namespace inode for a process
+fn get_ns_inode(pid: KernelPID, ns_type: []const u8) ?u64 {
+    var path_buf: [64]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/ns/{s}", .{ pid, ns_type }) catch return null;
+
+    var stat_buf: linux.Statx = undefined;
+    const result = linux.statx(
+        linux.AT.FDCWD,
+        @ptrCast(path.ptr),
+        0,
+        @bitCast(linux.STATX{ .INO = true }),
+        &stat_buf,
+    );
+    if (result != 0) return null;
+
+    return stat_buf.ino;
+}
+
+/// Check if two processes share the same fd table using kcmp
+fn shares_fd_table(pid1: KernelPID, pid2: KernelPID) bool {
+    const result = linux.syscall5(
+        .kcmp,
+        @intCast(pid1),
+        @intCast(pid2),
+        KCMP_FILES,
+        0,
+        0,
+    );
+    // kcmp returns 0 if resources are equal
+    return result == 0;
 }
 
 // ============================================================================
@@ -533,12 +585,3 @@ test "can_see - child namespace cannot see parent-only procs" {
     try std.testing.expect(!b.can_see(a));
 }
 
-test "pending_clones - append and remove" {
-    var v_procs = Self.init(std.testing.allocator);
-    defer v_procs.deinit();
-
-    try v_procs.pending_clones.append(100, CloneFlags.from(123));
-    const flags = v_procs.pending_clones.remove(100);
-    try std.testing.expect(flags != null);
-    try std.testing.expectEqual(@as(u64, 123), flags.?.raw);
-}

@@ -9,8 +9,7 @@ const Self = @This();
 
 /// Namespaces are refcounted and shared between procs.
 /// Used for visibility filtering - processes can only see other processes
-/// in the same namespace or ancestor namespaces.
-
+/// in the same namespace or descendent namespaces.
 ref_count: usize,
 allocator: Allocator,
 parent: ?*Self,
@@ -64,7 +63,7 @@ pub fn unregister_proc(self: *Self, proc: *Proc) void {
     }
 }
 
-/// Check if a proc is visible in this namespace
+/// Check if a proc is visible in this namespace.
 pub fn contains(self: *Self, proc: *Proc) bool {
     return self.procs.contains(proc);
 }

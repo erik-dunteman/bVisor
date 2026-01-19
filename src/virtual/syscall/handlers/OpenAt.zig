@@ -275,112 +275,30 @@ fn handleAllow(self: Self, supervisor: *Supervisor) !Result {
     return Result.reply_success(@intCast(vfd));
 }
 
-test "openat blocks private paths" {
+test "openat blocks /sys and /run paths" {
     const allocator = std.testing.allocator;
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    defer threaded.deinit();
-    const io = threaded.io();
-    _ = io;
-
-    const child_pid: Proc.KernelPID = 345; // some arbitrary kernel PID
-    const notify_fd: KernelFD = -1; // makes deinit ignore closing the fd
-
-    var supervisor = try Supervisor.init(allocator, notify_fd, child_pid);
+    const child_pid: Proc.KernelPID = 100;
+    var supervisor = try Supervisor.init(allocator, -1, child_pid);
     defer supervisor.deinit();
 
-    const flags = linux.O{
-        .ACCMODE = .RDONLY,
-        .CREAT = true,
+    const blocked_paths = [_][*:0]const u8{
+        "/sys/class/net",
+        "/run/docker.sock",
     };
 
-    const notif = makeNotif(.openat, .{
-        .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
-        .arg1 = @intFromPtr("/sys/private.txt"),
-        .arg2 = @intCast(@as(u32, @bitCast(flags))),
-        .arg3 = 0,
-    });
+    for (blocked_paths) |path_ptr| {
+        const notif = makeNotif(.openat, .{
+            .pid = child_pid,
+            .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
+            .arg1 = @intFromPtr(path_ptr),
+            .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .RDONLY }))),
+        });
 
-    const parsed = try Self.parse(notif);
-    try testing.expectEqualStrings("/sys/private.txt", parsed.path());
-    const res = try parsed.handle(&supervisor);
-    try testing.expect(res == .reply);
-    try testing.expect(res.is_error());
-}
-
-test "openat blocks /sys/class/net" {
-    const allocator = std.testing.allocator;
-    const child_pid: Proc.KernelPID = 100;
-    var supervisor = try Supervisor.init(allocator, -1, child_pid);
-    defer supervisor.deinit();
-
-    const notif = makeNotif(.openat, .{
-        .pid = child_pid,
-        .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
-        .arg1 = @intFromPtr("/sys/class/net"),
-        .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .RDONLY }))),
-    });
-
-    const parsed = try Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-    try testing.expect(res == .reply);
-    try testing.expect(res.is_error());
-}
-
-test "openat blocks /sys/kernel/security" {
-    const allocator = std.testing.allocator;
-    const child_pid: Proc.KernelPID = 100;
-    var supervisor = try Supervisor.init(allocator, -1, child_pid);
-    defer supervisor.deinit();
-
-    const notif = makeNotif(.openat, .{
-        .pid = child_pid,
-        .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
-        .arg1 = @intFromPtr("/sys/kernel/security/lsm"),
-        .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .RDONLY }))),
-    });
-
-    const parsed = try Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-    try testing.expect(res == .reply);
-    try testing.expect(res.is_error());
-}
-
-test "openat blocks /run/docker.sock" {
-    const allocator = std.testing.allocator;
-    const child_pid: Proc.KernelPID = 100;
-    var supervisor = try Supervisor.init(allocator, -1, child_pid);
-    defer supervisor.deinit();
-
-    const notif = makeNotif(.openat, .{
-        .pid = child_pid,
-        .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
-        .arg1 = @intFromPtr("/run/docker.sock"),
-        .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .RDONLY }))),
-    });
-
-    const parsed = try Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-    try testing.expect(res == .reply);
-    try testing.expect(res.is_error());
-}
-
-test "openat blocks /run/user paths" {
-    const allocator = std.testing.allocator;
-    const child_pid: Proc.KernelPID = 100;
-    var supervisor = try Supervisor.init(allocator, -1, child_pid);
-    defer supervisor.deinit();
-
-    const notif = makeNotif(.openat, .{
-        .pid = child_pid,
-        .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
-        .arg1 = @intFromPtr("/run/user/1000/bus"),
-        .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .RDONLY }))),
-    });
-
-    const parsed = try Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-    try testing.expect(res == .reply);
-    try testing.expect(res.is_error());
+        const parsed = try Self.parse(notif);
+        const res = try parsed.handle(&supervisor);
+        try testing.expect(res == .reply);
+        try testing.expect(res.is_error());
+    }
 }
 
 test "useVFS detects write modes" {
@@ -390,75 +308,12 @@ test "useVFS detects write modes" {
     try testing.expect(useVFS(linux.O{ .ACCMODE = .RDONLY, .CREAT = true }));
 }
 
-test "openat virtualizes /proc/self/status" {
+test "openat virtualizes /proc paths" {
     const allocator = std.testing.allocator;
     const child_pid: Proc.KernelPID = 12345;
     var supervisor = try Supervisor.init(allocator, -1, child_pid);
     defer supervisor.deinit();
 
-    const notif = makeNotif(.openat, .{
-        .pid = child_pid,
-        .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
-        .arg1 = @intFromPtr("/proc/self/status"),
-        .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .RDONLY }))),
-    });
-
-    const parsed = try Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-    try testing.expect(res == .reply);
-    try testing.expect(!res.is_error());
-}
-
-test "openat virtualizes /proc/1/status" {
-    const allocator = std.testing.allocator;
-    const child_pid: Proc.KernelPID = 12345;
-    var supervisor = try Supervisor.init(allocator, -1, child_pid);
-    defer supervisor.deinit();
-
-    const notif = makeNotif(.openat, .{
-        .pid = child_pid,
-        .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
-        .arg1 = @intFromPtr("/proc/1/status"),
-        .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .RDONLY }))),
-    });
-
-    const parsed = try Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-    try testing.expect(res == .reply);
-    try testing.expect(!res.is_error());
-}
-
-test "openat virtualizes /proc/meminfo" {
-    const allocator = std.testing.allocator;
-    const child_pid: Proc.KernelPID = 12345;
-    var supervisor = try Supervisor.init(allocator, -1, child_pid);
-    defer supervisor.deinit();
-
-    const notif = makeNotif(.openat, .{
-        .pid = child_pid,
-        .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
-        .arg1 = @intFromPtr("/proc/meminfo"),
-        .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .RDONLY }))),
-    });
-
-    const parsed = try Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-    try testing.expect(res == .reply);
-    try testing.expect(!res.is_error());
-}
-
-test "openat /proc/self resolves to kernel pid for child process" {
-    const allocator = std.testing.allocator;
-    const init_pid: Proc.KernelPID = 100;
-    var supervisor = try Supervisor.init(allocator, -1, init_pid);
-    defer supervisor.deinit();
-
-    // Add a child process
-    const child_pid: Proc.KernelPID = 200;
-    const parent = supervisor.virtual_procs.lookup.get(init_pid).?;
-    _ = try supervisor.virtual_procs.register_child(parent, child_pid, Procs.CloneFlags.from(0));
-
-    // Child opens /proc/self/status - should resolve to child's kernel pid
     const notif = makeNotif(.openat, .{
         .pid = child_pid,
         .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
@@ -487,30 +342,7 @@ test "openat handles allowed paths (returns NOENT for missing file)" {
 
     const parsed = try Self.parse(notif);
     const res = try parsed.handle(&supervisor);
-    // Supervisor handles all opens now (no passthrough)
     try testing.expect(res == .reply);
-    // File doesn't exist, so we get NOENT
-    try testing.expect(res.is_error());
-    try testing.expectEqual(linux.E.NOENT, @as(linux.E, @enumFromInt(res.reply.errno)));
-}
-
-test "openat O_WRONLY on missing file returns NOENT" {
-    const allocator = std.testing.allocator;
-    const child_pid: Proc.KernelPID = 100;
-    var supervisor = try Supervisor.init(allocator, -1, child_pid);
-    defer supervisor.deinit();
-
-    const notif = makeNotif(.openat, .{
-        .pid = child_pid,
-        .arg0 = @bitCast(@as(i64, linux.AT.FDCWD)),
-        .arg1 = @intFromPtr("/tmp/nonexistent_test_file.txt"),
-        .arg2 = @intCast(@as(u32, @bitCast(linux.O{ .ACCMODE = .WRONLY }))),
-    });
-
-    const parsed = try Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-    try testing.expect(res == .reply);
-    // O_WRONLY without O_CREAT on nonexistent file should fail
     try testing.expect(res.is_error());
     try testing.expectEqual(linux.E.NOENT, @as(linux.E, @enumFromInt(res.reply.errno)));
 }

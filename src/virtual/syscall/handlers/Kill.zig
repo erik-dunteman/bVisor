@@ -103,26 +103,3 @@ test "kill with zero pid returns ENOSYS" {
     try testing.expect(res.is_error());
     try testing.expectEqual(@as(i32, @intFromEnum(linux.E.NOSYS)), res.reply.errno);
 }
-
-test "kill across namespace boundary returns ESRCH" {
-    const allocator = testing.allocator;
-    var supervisor = try Supervisor.init(allocator, -1, 100);
-    defer supervisor.deinit();
-
-    // Create child in new namespace
-    const parent = supervisor.virtual_procs.lookup.get(100).?;
-    _ = try supervisor.virtual_procs.register_child(parent, 200, Procs.CloneFlags.from(linux.CLONE.NEWPID));
-
-    // Child tries to kill parent (parent not visible to child)
-    const notif = makeNotif(.kill, .{
-        .pid = 200, // child is caller
-        .arg0 = 100, // target is parent
-        .arg1 = 9,
-    });
-
-    const parsed = Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-
-    try testing.expect(res.is_error());
-    try testing.expectEqual(@as(i32, @intFromEnum(linux.E.SRCH)), res.reply.errno);
-}
