@@ -12,7 +12,7 @@ const Allocator = std.mem.Allocator;
 const Self = @This();
 
 allocator: Allocator,
-initChildPid: linux.pid_t,
+init_child_pid: linux.pid_t,
 notify_fd: KernelFD,
 logger: Logger,
 
@@ -25,7 +25,7 @@ pub fn init(allocator: Allocator, notify_fd: KernelFD, child_pid: linux.pid_t) !
     var virtual_procs = Procs.init(allocator);
     errdefer virtual_procs.deinit();
     _ = try virtual_procs.handleInitialProcess(child_pid);
-    return .{ .allocator = allocator, .initChildPid = child_pid, .notify_fd = notify_fd, .logger = logger, .virtual_procs = virtual_procs };
+    return .{ .allocator = allocator, .init_child_pid = child_pid, .notify_fd = notify_fd, .logger = logger, .virtual_procs = virtual_procs };
 }
 
 pub fn deinit(self: *Self) void {
