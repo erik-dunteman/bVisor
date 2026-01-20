@@ -15,6 +15,8 @@ test {
     _ = @import("virtual/syscall/handlers/GetPPid.zig");
     _ = @import("virtual/syscall/handlers/Kill.zig");
     _ = @import("virtual/syscall/handlers/ExitGroup.zig");
+    _ = @import("virtual/syscall/handlers/Read.zig");
+    _ = @import("virtual/syscall/handlers/Readv.zig");
 }
 
 pub fn main() !void {

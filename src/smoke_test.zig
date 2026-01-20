@@ -8,7 +8,7 @@ const linux = std.os.linux;
 /// README goal: Run bash commands like echo, ls, touch, curl, npm, sleep
 /// Many tests will fail initially - that's expected and guides implementation.
 ///
-/// Run with: docker run --rm --cap-add=SYS_PTRACE -v ./zig-out:/zig-out alpine /zig-out/bin/bVisor
+/// Run with: docker run --rm -v ./zig-out:/zig-out alpine /zig-out/bin/bVisor
 pub fn smokeTest(_: std.Io) void {
     std.debug.print("\n=== bVisor Smoke Test Scorecard ===\n\n", .{});
 
@@ -29,6 +29,7 @@ pub fn smokeTest(_: std.Io) void {
         // File I/O (needed for echo, cat, file operations)
         .{ "openat", test_openat },
         .{ "read_write", test_read_write },
+        .{ "read_proc_self", test_read_proc_self },
         .{ "close", test_close },
         .{ "dup3", test_dup3 },
         .{ "pipe", test_pipe },
@@ -229,6 +230,31 @@ fn test_read_write() bool {
 
     const n = @min(read_result, buf.len);
     return std.mem.eql(u8, buf[0..n], "hello");
+}
+
+fn test_read_proc_self() bool {
+    // Open /proc/self/stat (virtualized by bVisor)
+    const fd = posix.openat(linux.AT.FDCWD, "/proc/self/stat", .{ .ACCMODE = .RDONLY }, 0) catch return false;
+    defer posix.close(fd);
+
+    // Read from the virtualized proc file
+    var buf: [64]u8 = undefined;
+    const read_result = linux.read(fd, &buf, buf.len);
+    if (linux.errno(read_result) != .SUCCESS) return false;
+
+    const n: usize = @intCast(read_result);
+    if (n == 0) return false;
+
+    // The virtualized /proc/self returns the virtual pid followed by newline
+    // Parse the pid from the content and verify it matches getpid()
+    const content = buf[0..n];
+    const pid_end = std.mem.indexOfScalar(u8, content, '\n') orelse n;
+    const pid_str = content[0..pid_end];
+
+    const read_pid = std.fmt.parseInt(linux.pid_t, pid_str, 10) catch return false;
+    const actual_pid = linux.getpid();
+
+    return read_pid == actual_pid;
 }
 
 fn test_close() bool {
