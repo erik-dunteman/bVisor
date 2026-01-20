@@ -512,39 +512,39 @@ fn test_uname() bool {
 }
 
 // =============================================================================
-// Blocked Syscall Tests (expect EPERM - sandbox escape prevention)
+// Blocked Syscall Tests (expect ENOSYS - sandbox escape prevention)
 // =============================================================================
 
 fn test_ptrace_blocked() bool {
     const PTRACE_TRACEME = 0;
     const result = linux.ptrace(PTRACE_TRACEME, 0, 0, 0, 0);
-    return linux.errno(result) == .PERM;
+    return linux.errno(result) == .NOSYS;
 }
 
 fn test_mount_blocked() bool {
     const result = linux.mount("none", "/mnt", "tmpfs", 0, 0);
-    return linux.errno(result) == .PERM;
+    return linux.errno(result) == .NOSYS;
 }
 
 fn test_chroot_blocked() bool {
     const result = linux.chroot("/");
-    return linux.errno(result) == .PERM;
+    return linux.errno(result) == .NOSYS;
 }
 
 fn test_pivot_root_blocked() bool {
     const result = linux.pivot_root("/tmp", "/tmp");
-    return linux.errno(result) == .PERM;
+    return linux.errno(result) == .NOSYS;
 }
 
 fn test_setns_blocked() bool {
-    // setns with invalid fd should return EPERM (blocked) not EBADF
+    // setns with invalid fd should return ENOSYS (blocked) not EBADF
     const result = linux.syscall2(.setns, @as(u64, @bitCast(@as(i64, -1))), 0);
-    return linux.errno(result) == .PERM;
+    return linux.errno(result) == .NOSYS;
 }
 
 fn test_unshare_blocked() bool {
     // Try to unshare mount namespace
     const CLONE_NEWNS = 0x00020000;
     const result = linux.unshare(CLONE_NEWNS);
-    return linux.errno(result) == .PERM;
+    return linux.errno(result) == .NOSYS;
 }
