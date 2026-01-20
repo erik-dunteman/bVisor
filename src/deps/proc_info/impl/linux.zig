@@ -81,13 +81,15 @@ fn get_ns_inode(pid: KernelPID, ns_type: []const u8) ?u64 {
 
 /// Check if two processes share the same fd table using kcmp
 fn shares_fd_table(pid1: KernelPID, pid2: KernelPID) bool {
-    // kcmp returns 0 if resources are equal, positive if different, negative on error
-    return LinuxResult(bool).from(linux.syscall5(
+    // kcmp returns: 0 = equal, positive = different, negative = error
+    // Only 0 means they share the same fd table
+    const result = linux.syscall5(
         .kcmp,
         @intCast(pid1),
         @intCast(pid2),
         KCMP_FILES,
         0,
         0,
-    )).unwrap() catch false;
+    );
+    return result == 0;
 }
