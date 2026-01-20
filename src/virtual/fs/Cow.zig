@@ -200,10 +200,15 @@ pub fn open(self: *const Self, virtual_path: []const u8, flags: linux.O, mode: l
                 return err;
             };
             if (n == 0) break;
-            _ = posix.write(cow_fd, copy_buf[0..n]) catch |err| {
-                posix.close(cow_fd);
-                return err;
-            };
+
+            // Handle partial writes
+            var written: usize = 0;
+            while (written < n) {
+                written += posix.write(cow_fd, copy_buf[written..n]) catch |err| {
+                    posix.close(cow_fd);
+                    return err;
+                };
+            }
         }
 
         // Close and reopen with requested flags

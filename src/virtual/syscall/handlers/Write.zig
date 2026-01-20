@@ -65,13 +65,12 @@ pub fn handle(self: Self, supervisor: *Supervisor) !Result {
         return Result.replyErr(.BADF);
     };
 
-    // Read data from child's buffer
+    // Write up to min(count, 4096) - short writes are valid POSIX behavior
     var buf: [4096]u8 = undefined;
-    const write_count = @min(self.count, buf.len);
-    try memory_bridge.readSlice(buf[0..write_count], self.kernel_pid, self.buf_ptr);
+    const write_size = @min(self.count, buf.len);
+    try memory_bridge.readSlice(buf[0..write_size], self.kernel_pid, self.buf_ptr);
 
-    // Write to the FD
-    const n = fd_ptr.write(buf[0..write_count]) catch |err| {
+    const n = fd_ptr.write(buf[0..write_size]) catch |err| {
         logger.log("write: error writing to fd: {s}", .{@errorName(err)});
         return Result.replyErr(.IO);
     };

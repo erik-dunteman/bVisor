@@ -21,7 +21,24 @@ pub fn init(uid: [16]u8) !Self {
     const root_slice = std.fmt.bufPrint(&root, "/tmp/.bvisor/sb/{s}/tmp", .{uid}) catch unreachable;
     const root_len = root_slice.len;
 
-    // Create the tmp directory (parent dirs should exist from Cow.init)
+    // Create parent directories
+    const parents = [_][]const u8{ "/tmp/.bvisor", "/tmp/.bvisor/sb" };
+    for (parents) |dir| {
+        posix.mkdirat(linux.AT.FDCWD, dir, 0o755) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+    }
+
+    // Create UUID-specific directory
+    var sb_uid_buf: [48]u8 = undefined;
+    const sb_uid_path = std.fmt.bufPrint(&sb_uid_buf, "/tmp/.bvisor/sb/{s}", .{uid}) catch unreachable;
+    posix.mkdirat(linux.AT.FDCWD, sb_uid_path, 0o755) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
+    // Create the tmp directory
     posix.mkdirat(linux.AT.FDCWD, root_slice, 0o755) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,

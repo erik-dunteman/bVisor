@@ -137,7 +137,7 @@ fn resolveWithRules(path_str: []const u8, rules: []const PathRule, default: Acti
 
 /// Returns true if the flags indicate a write operation requiring VFS redirect
 pub fn useVFS(flags: linux.O) bool {
-    return flags.ACCMODE == .WRONLY or flags.ACCMODE == .RDWR or flags.CREAT;
+    return flags.ACCMODE == .WRONLY or flags.ACCMODE == .RDWR or flags.CREAT or flags.TRUNC;
 }
 
 /// Convert linux.O flags to posix.O flags.
