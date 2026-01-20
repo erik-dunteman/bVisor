@@ -54,10 +54,8 @@ allocator: Allocator,
 // owns underlying procs
 lookup: ProcLookup = .empty,
 
-init_pid: KernelPID, // kernel PID of the initial process, to prevent upward lookups from escaping
-
 pub fn init(allocator: Allocator) Self {
-    return .{ .allocator = allocator, .init_pid = undefined };
+    return .{ .allocator = allocator };
 }
 
 pub fn deinit(self: *Self) void {
@@ -130,7 +128,6 @@ pub fn handle_initial_process(self: *Self, pid: KernelPID) !void {
     const root_proc = try Proc.init(self.allocator, pid, null, null, null);
     errdefer root_proc.deinit(self.allocator);
 
-    self.init_pid = pid;
     try self.lookup.put(self.allocator, pid, root_proc);
 }
 
