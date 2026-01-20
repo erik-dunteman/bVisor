@@ -6,6 +6,7 @@ const Supervisor = @import("../../Supervisor.zig");
 
 // All supported syscalls
 const Read = @import("handlers/Read.zig");
+const Write = @import("handlers/Write.zig");
 const Readv = @import("handlers/Readv.zig");
 const Writev = @import("handlers/Writev.zig");
 const OpenAt = @import("handlers/OpenAt.zig");
@@ -21,6 +22,7 @@ pub const Syscall = union(enum) {
     _blocked: Blocked, // TODO: implement at bpf layer
     _to_implement: ToImplement,
     read: Read,
+    write: Write,
     readv: Readv,
     writev: Writev,
     openat: OpenAt,
@@ -90,6 +92,7 @@ pub const Syscall = union(enum) {
             // Implemented
             // I/O
             .read => return .{ .read = Read.parse(notif) },
+            .write => return .{ .write = Write.parse(notif) },
             .readv => return .{ .readv = try Readv.parse(notif) },
             .writev => return .{ .writev = try Writev.parse(notif) },
             // Filesystem
@@ -104,7 +107,6 @@ pub const Syscall = union(enum) {
 
             // To Implement
             // FD operations (need virtual FD translation)
-            .write,
             .close,
             .dup,
             .dup3,

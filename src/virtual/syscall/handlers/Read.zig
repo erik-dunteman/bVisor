@@ -52,16 +52,15 @@ pub fn handle(self: Self, supervisor: *Supervisor) !Result {
         return Result.replyErr(.BADF);
     };
 
-    // Allocate stack buffer and read
+    // Read up to min(count, 4096) - short reads are valid POSIX behavior
     var buf: [4096]u8 = undefined;
-    const read_count = @min(self.count, buf.len);
+    const read_size = @min(self.count, buf.len);
 
-    const n = fd_ptr.read(buf[0..read_count]) catch |err| {
+    const n = fd_ptr.read(buf[0..read_size]) catch |err| {
         logger.log("read: error reading from fd: {s}", .{@errorName(err)});
         return Result.replyErr(.IO);
     };
 
-    // Write data back to child's buffer
     if (n > 0) {
         try memory_bridge.writeSlice(buf[0..n], self.kernel_pid, self.buf_ptr);
     }

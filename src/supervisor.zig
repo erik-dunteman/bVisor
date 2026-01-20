@@ -7,6 +7,8 @@ const KernelFD = types.KernelFD;
 const Result = types.LinuxResult;
 const Logger = types.Logger;
 const Procs = @import("virtual/proc/Procs.zig");
+const Cow = @import("virtual/fs/Cow.zig");
+const Tmp = @import("virtual/fs/Tmp.zig");
 const Allocator = std.mem.Allocator;
 
 const Self = @This();
@@ -20,12 +22,35 @@ logger: Logger,
 // All pros track their own virtual namespaces and file descriptors
 virtual_procs: Procs,
 
+// COW filesystem for sandbox isolation
+cow: Cow,
+// Private /tmp for sandbox isolation
+tmp: Tmp,
+
 pub fn init(allocator: Allocator, notify_fd: KernelFD, child_pid: linux.pid_t) !Self {
     const logger = Logger.init(.supervisor);
     var virtual_procs = Procs.init(allocator);
     errdefer virtual_procs.deinit();
     _ = try virtual_procs.handleInitialProcess(child_pid);
-    return .{ .allocator = allocator, .init_child_pid = child_pid, .notify_fd = notify_fd, .logger = logger, .virtual_procs = virtual_procs };
+
+    // Generate shared UID for all sandbox directories
+    const uid = Cow.generateUid();
+
+    var cow = try Cow.init(uid);
+    errdefer cow.deinit();
+
+    var tmp = try Tmp.init(uid);
+    errdefer tmp.deinit();
+
+    return .{
+        .allocator = allocator,
+        .init_child_pid = child_pid,
+        .notify_fd = notify_fd,
+        .logger = logger,
+        .virtual_procs = virtual_procs,
+        .cow = cow,
+        .tmp = tmp,
+    };
 }
 
 pub fn deinit(self: *Self) void {
@@ -33,6 +58,8 @@ pub fn deinit(self: *Self) void {
         posix.close(self.notify_fd);
     }
     self.virtual_procs.deinit();
+    self.cow.deinit();
+    self.tmp.deinit();
 }
 
 /// Main notification loop. Reads syscall notifications from the kernel,

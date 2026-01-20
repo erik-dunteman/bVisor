@@ -69,6 +69,7 @@ pub const Action = enum {
     allow,
     // Special handlers
     virtualize_proc,
+    virtualize_tmp,
 };
 
 pub const Rule = union(enum) {
@@ -93,10 +94,16 @@ pub const fs_rules: []const PathRule = &.{
     .{ .prefix = "/sys", .rule = .{ .terminal = .block } },
     .{ .prefix = "/run", .rule = .{ .terminal = .block } },
 
-    // Allowed (passthrough)
-    .{ .prefix = "/tmp", .rule = .{ .terminal = .allow } },
+    // Virtualized - private /tmp (all reads/writes redirected)
+    // Block .bvisor internal directory, allow everything else in /tmp
+    .{ .prefix = "/tmp", .rule = .{ .branch = .{
+        .children = &.{
+            .{ .prefix = ".bvisor", .rule = .{ .terminal = .block } },
+        },
+        .default = .virtualize_tmp,
+    } } },
 
-    // Virtualized
+    // Virtualized - /proc
     .{ .prefix = "/proc", .rule = .{ .terminal = .virtualize_proc } },
 };
 
@@ -130,7 +137,7 @@ fn resolveWithRules(path_str: []const u8, rules: []const PathRule, default: Acti
 
 /// Returns true if the flags indicate a write operation requiring VFS redirect
 pub fn useVFS(flags: linux.O) bool {
-    return flags.ACCMODE == .WRONLY or flags.ACCMODE == .RDWR or flags.CREAT;
+    return flags.ACCMODE == .WRONLY or flags.ACCMODE == .RDWR or flags.CREAT or flags.TRUNC;
 }
 
 /// Convert linux.O flags to posix.O flags.
@@ -205,6 +212,10 @@ pub fn handle(self: Self, supervisor: *Supervisor) !Result {
             logger.log("openat: virtualizing proc path: {s}", .{self.path()});
             return self.handleVirtualizeProc(supervisor);
         },
+        .virtualize_tmp => {
+            logger.log("openat: virtualizing tmp path: {s}", .{self.path()});
+            return self.handleVirtualizeTmp(supervisor);
+        },
     }
 }
 
@@ -250,6 +261,48 @@ fn handleVirtualizeProc(self: Self, supervisor: *Supervisor) !Result {
     return Result.replySuccess(@intCast(vfd));
 }
 
+fn handleVirtualizeTmp(self: Self, supervisor: *Supervisor) !Result {
+    const logger = supervisor.logger;
+
+    // Look up the calling process
+    const proc = supervisor.virtual_procs.lookup.get(self.kernel_pid) orelse {
+        std.debug.panic("openat: supervisor invariant violated - kernel pid {d} not in virtual_procs", .{self.kernel_pid});
+    };
+
+    const path_slice = self.path();
+
+    // Open via private tmp - all reads and writes go to sandbox-local directory
+    const tmp_fd = supervisor.tmp.open(path_slice, self.flags, self.mode) catch |err| {
+        const errno = tmpErrorToLinuxErrno(err);
+        logger.log("openat: tmp open failed: {s}", .{@tagName(errno)});
+        return Result.replyErr(errno);
+    };
+
+    // Store in fd_table - use kernel fd type since it's a real fd to a real file
+    const vfd = try proc.fd_table.open(.{ .kernel = tmp_fd });
+
+    logger.log("openat: opened private tmp fd={d} as vfd={d}", .{ tmp_fd, vfd });
+
+    return Result.replySuccess(@intCast(vfd));
+}
+
+fn tmpErrorToLinuxErrno(err: anytype) linux.E {
+    return switch (err) {
+        error.AccessDenied => .ACCES,
+        error.FileNotFound => .NOENT,
+        error.IsDir => .ISDIR,
+        error.NotDir => .NOTDIR,
+        error.PathAlreadyExists => .EXIST,
+        error.NoSpaceLeft => .NOSPC,
+        error.NameTooLong => .NAMETOOLONG,
+        error.InvalidPath => .INVAL,
+        error.SymLinkLoop => .LOOP,
+        error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => .MFILE,
+        error.SystemResources => .NOMEM,
+        else => .IO,
+    };
+}
+
 fn handleAllow(self: Self, supervisor: *Supervisor) !Result {
     const logger = supervisor.logger;
 
@@ -259,9 +312,35 @@ fn handleAllow(self: Self, supervisor: *Supervisor) !Result {
         std.debug.panic("openat: supervisor invariant violated - kernel pid {d} not in virtual_procs", .{self.kernel_pid});
     };
 
-    // Perform the open ourselves using posix (works on both Linux and macOS for tests)
-    // Note: dirfd translation would be needed for relative paths with non-AT_FDCWD dirfd
     const path_slice = self.path_buf[0..self.path_len :0];
+
+    // Normalize the path for COW lookup
+    var norm_buf: [512]u8 = undefined;
+    const normalized_path = normalizePath(path_slice, &norm_buf) catch path_slice;
+
+    // Check if we should use COW: either writing or COW file already exists
+    const should_use_cow = useVFS(self.flags) or supervisor.cow.exists(normalized_path);
+
+    if (should_use_cow) {
+        logger.log("openat: using COW for path: {s}", .{normalized_path});
+
+        // Use COW filesystem
+        const cow_fd = supervisor.cow.open(normalized_path, self.flags, self.mode) catch |err| {
+            const errno = cowErrorToLinuxErrno(err);
+            logger.log("openat: COW open failed: {s}", .{@tagName(errno)});
+            return Result.replyErr(errno);
+        };
+
+        // Store in fd_table as COW fd
+        const vfd = try proc.fd_table.open(.{ .cow = .{ .backing_fd = cow_fd } });
+
+        logger.log("openat: opened COW fd={d} as vfd={d}", .{ cow_fd, vfd });
+
+        return Result.replySuccess(@intCast(vfd));
+    }
+
+    // Read-only access with no existing COW - open original file directly
+    logger.log("openat: passthrough for read-only path: {s}", .{path_slice});
 
     // Convert linux.O flags to posix.O flags (different bit layouts on Linux vs Darwin)
     const posix_flags = linuxOToPosixO(self.flags);
@@ -278,6 +357,22 @@ fn handleAllow(self: Self, supervisor: *Supervisor) !Result {
     logger.log("openat: opened kernel fd={d} as vfd={d}", .{ kfd, vfd });
 
     return Result.replySuccess(@intCast(vfd));
+}
+
+fn cowErrorToLinuxErrno(err: anytype) linux.E {
+    return switch (err) {
+        error.AccessDenied => .ACCES,
+        error.FileNotFound => .NOENT,
+        error.IsDir => .ISDIR,
+        error.NotDir => .NOTDIR,
+        error.PathAlreadyExists => .EXIST,
+        error.NoSpaceLeft => .NOSPC,
+        error.NameTooLong => .NAMETOOLONG,
+        error.SymLinkLoop => .LOOP,
+        error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => .MFILE,
+        error.SystemResources => .NOMEM,
+        else => .IO,
+    };
 }
 
 test "openat blocks /sys and /run paths" {
@@ -370,7 +465,7 @@ test "openat O_CREAT creates file, write and read back" {
     std.Io.Dir.deleteFileAbsolute(io, test_path) catch {};
     defer std.Io.Dir.deleteFileAbsolute(io, test_path) catch {};
 
-    // Step 1: Create and write to file
+    // Step 1: Create and write to file (now goes to COW)
     {
         const notif = makeNotif(.openat, .{
             .pid = child_pid,
@@ -388,16 +483,15 @@ test "openat O_CREAT creates file, write and read back" {
         const vfd: FdTable.VirtualFD = @intCast(res.reply.val);
         try testing.expectEqual(@as(FdTable.VirtualFD, 3), vfd);
 
-        // Get the FD and write to it
+        // Get the FD and write to it (now via FD.write)
         const proc = supervisor.virtual_procs.lookup.get(child_pid).?;
         var fd = proc.fd_table.get(vfd).?;
-        const kfd = fd.kernel; // get the kernel fd
-        _ = try posix.write(kfd, test_content);
-        posix.close(kfd);
+        _ = try fd.write(test_content);
+        fd.close();
         _ = proc.fd_table.remove(vfd);
     }
 
-    // Step 2: Open for read and verify content
+    // Step 2: Open for read and verify content (should read from COW)
     {
         const notif = makeNotif(.openat, .{
             .pid = child_pid,
@@ -420,7 +514,7 @@ test "openat O_CREAT creates file, write and read back" {
         const n = try fd.read(&buf);
         try testing.expectEqualStrings(test_content, buf[0..n]);
 
-        posix.close(fd.kernel);
+        fd.close();
     }
 }
 
@@ -430,4 +524,15 @@ test "resolve /proc/self triggers virtualize" {
 
 test "path traversal /proc/../etc/passwd does not virtualize" {
     try testing.expect(try resolve("/proc/../etc/passwd") == .block);
+}
+
+test "resolve /tmp triggers virtualize_tmp" {
+    try testing.expect(try resolve("/tmp") == .virtualize_tmp);
+    try testing.expect(try resolve("/tmp/foo.txt") == .virtualize_tmp);
+    try testing.expect(try resolve("/tmp/subdir/file") == .virtualize_tmp);
+}
+
+test "resolve /tmp/.bvisor is blocked" {
+    try testing.expect(try resolve("/tmp/.bvisor") == .block);
+    try testing.expect(try resolve("/tmp/.bvisor/sb/abc123/tmp/foo") == .block);
 }

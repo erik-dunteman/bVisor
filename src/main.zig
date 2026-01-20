@@ -9,6 +9,8 @@ test {
     _ = @import("virtual/proc/Procs.zig");
     _ = @import("virtual/fs/FD.zig");
     _ = @import("virtual/fs/FdTable.zig");
+    _ = @import("virtual/fs/Cow.zig");
+    _ = @import("virtual/fs/Tmp.zig");
     _ = @import("virtual/syscall/handlers/OpenAt.zig");
     _ = @import("virtual/syscall/handlers/Clone.zig");
     _ = @import("virtual/syscall/handlers/GetPid.zig");
@@ -17,6 +19,7 @@ test {
     _ = @import("virtual/syscall/handlers/ExitGroup.zig");
     _ = @import("virtual/syscall/handlers/Read.zig");
     _ = @import("virtual/syscall/handlers/Readv.zig");
+    _ = @import("virtual/syscall/handlers/Write.zig");
 }
 
 pub fn main() !void {
