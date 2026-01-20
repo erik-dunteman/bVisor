@@ -11,7 +11,7 @@ const KernelPID = Proc.KernelPID;
 pub const FD = union(enum) {
     kernel: types.KernelFD, // supervisor maintains virtual FDs for every fd, for consistency
     proc: ProcFD, // virtualized proc file
-    cow: Cow, // copy-on-write file, created only if user requests more than read perms
+    cow: CowFD, // copy-on-write file, created only if user requests more than read perms
 
     const Self = @This();
 
@@ -36,15 +36,21 @@ pub const FD = union(enum) {
         }
     };
 
-    pub const Cow = struct {
-        mount_path: []const u8,
-        backing_fd: types.KernelFD, // hidden from user, the actual FD
-        offset: usize = 0,
+    /// Copy-on-write file descriptor.
+    /// The backing_fd points to a file in the COW root directory.
+    pub const CowFD = struct {
+        backing_fd: types.KernelFD,
 
-        pub fn read(self: *Cow, buf: []u8) !usize {
-            _ = self;
-            _ = buf;
-            return error.NotImplemented;
+        pub fn read(self: *CowFD, buf: []u8) !usize {
+            return posix.read(self.backing_fd, buf);
+        }
+
+        pub fn write(self: *CowFD, data: []const u8) !usize {
+            return posix.write(self.backing_fd, data);
+        }
+
+        pub fn close(self: *CowFD) void {
+            posix.close(self.backing_fd);
         }
     };
 
@@ -54,6 +60,24 @@ pub const FD = union(enum) {
             .kernel => |kfd| return posix.read(kfd, buf),
             .proc => |*p| return p.read(buf),
             .cow => |*c| return c.read(buf),
+        }
+    }
+
+    /// Write to the virtual file descriptor
+    pub fn write(self: *Self, data: []const u8) !usize {
+        switch (self.*) {
+            .kernel => |kfd| return posix.write(kfd, data),
+            .proc => return error.ReadOnlyFileSystem,
+            .cow => |*c| return c.write(data),
+        }
+    }
+
+    /// Close the virtual file descriptor
+    pub fn close(self: *Self) void {
+        switch (self.*) {
+            .kernel => |kfd| posix.close(kfd),
+            .proc => {}, // nothing to close for virtual proc files
+            .cow => |*c| c.close(),
         }
     }
 };
