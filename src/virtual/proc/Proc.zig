@@ -115,40 +115,6 @@ pub fn canSee(self: *Self, target: *Self) bool {
     return self.namespace.contains(target);
 }
 
-/// Get a sorted list of all kernel PIDs visible in this process's namespace.
-/// Does not include processes in nested child namespaces.
-pub fn getPidsOwned(self: *Self, allocator: Allocator) ![]KernelPID {
-    const root = self.getNamespaceRoot();
-    const procs = try root.collectNamespaceProcsOwned(allocator);
-    defer allocator.free(procs);
-
-    var pids = try std.ArrayList(KernelPID).initCapacity(allocator, procs.len);
-    for (procs) |proc| {
-        try pids.append(allocator, proc.pid);
-    }
-    std.mem.sort(KernelPID, pids.items, {}, std.sort.asc(KernelPID));
-    return pids.toOwnedSlice(allocator);
-}
-
-/// Collect all procs in the same namespace as self (stops at namespace boundaries).
-/// Returned slice must be freed by caller.
-pub fn collectNamespaceProcsOwned(self: *Self, allocator: Allocator) ![]*Self {
-    var accumulator = try ProcList.initCapacity(allocator, 16);
-    try self._collectNamespaceRecursive(&accumulator, allocator, self.namespace);
-    return accumulator.toOwnedSlice(allocator);
-}
-
-fn _collectNamespaceRecursive(self: *Self, accumulator: *ProcList, allocator: Allocator, ns: *Namespace) !void {
-    try accumulator.append(allocator, self);
-    var iter = self.children.iterator();
-    while (iter.next()) |child_entry| {
-        const child: *Self = child_entry.key_ptr.*;
-        // stop at namespace boundary
-        if (child.namespace != ns) continue;
-        try child._collectNamespaceRecursive(accumulator, allocator, ns);
-    }
-}
-
 /// Collect all descendant procs (crosses namespace boundaries).
 /// Used for process exit to kill entire subtree.
 /// Returned slice must be freed by caller.

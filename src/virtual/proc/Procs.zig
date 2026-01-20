@@ -244,20 +244,14 @@ test "basic tree operations work - add, kill" {
     try std.testing.expectEqual(0, v_procs.lookup.get(d_pid).?.children.count());
     try std.testing.expectEqual(null, v_procs.lookup.get(b_pid));
 
-    // get pids
-    var a_pids = try v_procs.lookup.get(a_pid).?.getPidsOwned(allocator);
-    try std.testing.expectEqual(3, a_pids.len);
-    try std.testing.expectEqualSlices(KernelPID, &[3]KernelPID{ 33, 55, 66 }, a_pids);
-    allocator.free(a_pids);
+    // verify namespace visibility via namespace.procs
+    try std.testing.expectEqual(3, v_procs.lookup.get(a_pid).?.namespace.procs.count());
 
     // re-add b, should work
     const b_pid_2 = 45;
     _ = try v_procs.registerChild(v_procs.lookup.get(a_pid).?, b_pid_2, CloneFlags.from(0));
 
-    a_pids = try v_procs.lookup.get(a_pid).?.getPidsOwned(allocator);
-    defer allocator.free(a_pids);
-    try std.testing.expectEqual(4, a_pids.len);
-    try std.testing.expectEqualSlices(KernelPID, &[4]KernelPID{ 33, 45, 55, 66 }, a_pids);
+    try std.testing.expectEqual(4, v_procs.lookup.get(a_pid).?.namespace.procs.count());
 
     // clear whole tree
     try v_procs.handleProcessExit(a_pid);
@@ -318,19 +312,15 @@ test "kill intermediate node removes subtree but preserves siblings" {
     try std.testing.expectEqual(null, v_procs.lookup.get(d_pid));
 }
 
-test "collect_tree on single node" {
-    const allocator = std.testing.allocator;
-    var v_procs = Self.init(allocator);
+test "namespace visibility on single node" {
+    var v_procs = Self.init(std.testing.allocator);
     defer v_procs.deinit();
 
     try v_procs.handleInitialProcess(100);
     const proc = v_procs.lookup.get(100).?;
 
-    const pids = try proc.getPidsOwned(allocator);
-    defer allocator.free(pids);
-
-    try std.testing.expectEqual(1, pids.len);
-    try std.testing.expectEqual(100, pids[0]);
+    try std.testing.expectEqual(1, proc.namespace.procs.count());
+    try std.testing.expect(proc.namespace.contains(proc));
 }
 
 test "deep nesting" {
@@ -373,9 +363,8 @@ test "wide tree with many siblings" {
     try std.testing.expectEqual(10, v_procs.lookup.get(parent_pid).?.children.count());
 }
 
-test "nested namespace - get_pids_owned respects boundaries" {
-    const allocator = std.testing.allocator;
-    var v_procs = Self.init(allocator);
+test "nested namespace - visibility rules" {
+    var v_procs = Self.init(std.testing.allocator);
     defer v_procs.deinit();
 
     // Create structure:
@@ -400,22 +389,23 @@ test "nested namespace - get_pids_owned respects boundaries" {
     const c_proc = v_procs.lookup.get(c_pid).?;
     try std.testing.expect(b_proc.namespace == c_proc.namespace);
 
-    // get_pids_owned from A should only see A (B created new ns)
-    const ns1_pids = try a_proc.getPidsOwned(allocator);
-    defer allocator.free(ns1_pids);
-    try std.testing.expectEqual(1, ns1_pids.len);
-    try std.testing.expectEqual(a_pid, ns1_pids[0]);
+    // Parent namespace (ns1) can see all procs including those in child namespaces
+    // This is the correct Linux behavior: parent namespaces have visibility into children
+    try std.testing.expectEqual(3, a_proc.namespace.procs.count());
+    try std.testing.expect(a_proc.canSee(a_proc));
+    try std.testing.expect(a_proc.canSee(b_proc));
+    try std.testing.expect(a_proc.canSee(c_proc));
 
-    // get_pids_owned from B should see B and C (ns2)
-    const ns2_pids = try b_proc.getPidsOwned(allocator);
-    defer allocator.free(ns2_pids);
-    try std.testing.expectEqual(2, ns2_pids.len);
-    try std.testing.expectEqualSlices(KernelPID, &[2]KernelPID{ 200, 300 }, ns2_pids);
+    // Child namespace (ns2) can only see procs in its own namespace
+    try std.testing.expectEqual(2, b_proc.namespace.procs.count());
+    try std.testing.expect(b_proc.canSee(b_proc));
+    try std.testing.expect(b_proc.canSee(c_proc));
+    try std.testing.expect(!b_proc.canSee(a_proc)); // cannot see parent namespace
 
-    // get_pids_owned from C should also see B and C (same namespace)
-    const ns2_pids_from_c = try c_proc.getPidsOwned(allocator);
-    defer allocator.free(ns2_pids_from_c);
-    try std.testing.expectEqual(2, ns2_pids_from_c.len);
+    // C has same visibility as B (same namespace)
+    try std.testing.expectEqual(2, c_proc.namespace.procs.count());
+    try std.testing.expect(c_proc.canSee(b_proc));
+    try std.testing.expect(!c_proc.canSee(a_proc));
 }
 
 test "nested namespace - killing parent kills nested namespace" {
