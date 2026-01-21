@@ -5,9 +5,10 @@ const Namespace = @import("Namespace.zig");
 const FdTable = @import("../fs/FdTable.zig");
 
 // ERIK TODO:
-// - rename KernelPID to SupervisorPID (a pid as visible by the supervisor)
+// - rename KernelPID to SupervisorPID (a pid as visible rom the supervisor)
 // - rename VirtualPID to GuestPID (a pid as visible by that guest process, requiring lookup via namespace)
-// - rename
+// - rename KernelFD to SupervisorFD (a pid as owned (visible) by the supervisor)
+// - keep VirtualFD as VirtualFD (it is a GuestFD, but since the supervisor created it, we know it's virutalized)
 pub const KernelPID = linux.pid_t;
 
 const ProcSet = std.AutoHashMapUnmanaged(*Self, void);
