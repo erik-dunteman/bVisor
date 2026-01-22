@@ -12,14 +12,14 @@ test {
     _ = @import("virtual/fs/Cow.zig");
     _ = @import("virtual/fs/Tmp.zig");
     _ = @import("virtual/syscall/handlers/exit_group.zig");
-    _ = @import("virtual/syscall/handlers/getpid.zig");
-    _ = @import("virtual/syscall/handlers/getppid.zig");
-    _ = @import("virtual/syscall/handlers/kill.zig");
-    _ = @import("virtual/syscall/handlers/openat.zig");
-    _ = @import("virtual/syscall/handlers/read.zig");
-    _ = @import("virtual/syscall/handlers/readv.zig");
-    _ = @import("virtual/syscall/handlers/write.zig");
-    _ = @import("virtual/syscall/handlers/writev.zig");
+    _ = @import("virtual/syscall/handlers/GetPid.zig");
+    _ = @import("virtual/syscall/handlers/GetPPid.zig");
+    _ = @import("virtual/syscall/handlers/Kill.zig");
+    _ = @import("virtual/syscall/handlers/OpenAt.zig");
+    _ = @import("virtual/syscall/handlers/Read.zig");
+    _ = @import("virtual/syscall/handlers/Readv.zig");
+    _ = @import("virtual/syscall/handlers/Write.zig");
+    _ = @import("virtual/syscall/handlers/Writev.zig");
 }
 
 pub fn main() !void {

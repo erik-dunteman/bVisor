@@ -18,7 +18,7 @@ const exit_group = @import("handlers/exit_group.zig");
 
 pub inline fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
     const sys: linux.SYS = @enumFromInt(notif.data.nr);
-    std.debug.print("\n", .{}); // little whitespace for visual clarity
+    std.debug.print("\n", .{});
     supervisor.logger.log("Handling syscall: {s}", .{@tagName(sys)});
     return switch (sys) {
         // Implemented - files

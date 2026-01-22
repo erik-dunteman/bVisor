@@ -84,6 +84,15 @@ Isolation is achieved via a copy-on-write overlay on top of the host filesystem.
 - [ ] CPU/memory limits
 - [ ] I/O throttling
 
+#### 5. Host Info Virtualization - *not started*
+
+Prevent leaking host system details in multi-tenant environments.
+
+- [ ] `uname` - kernel version, hostname
+- [ ] `sysinfo` - total RAM, uptime, load
+- [ ] `getrlimit` - resource configuration
+- [ ] `getrusage` - resource usage stats
+
 ### Infrastructure
 
 **Core**
@@ -94,13 +103,13 @@ Isolation is achieved via a copy-on-write overlay on top of the host filesystem.
 - [x] `writev` emulation (stdout/stderr capture)
 
 **Blocked Dangerous Syscalls**
-- [x] `ptrace`, `mount`, `umount2`, `chroot`, `pivot_root`, `setns`, `unshare`, `seccomp`, `reboot`
+- [x] `ptrace`, `mount`, `umount2`, `chroot`, `pivot_root`, `setns`, `unshare`, `seccomp`, `reboot`, `prlimit64`
 
 **Passthrough** (kernel handles directly)
 - [x] Memory: `brk`, `mmap`, `mprotect`, `munmap`
 - [x] Time: `clock_gettime`, `gettimeofday`, `nanosleep`
 - [x] Identity: `getuid`, `geteuid`, `getgid`, `getegid`
-- [x] Runtime: `getrandom`, `uname`, `futex`, `prlimit64`
+- [x] Runtime: `getrandom`, `futex`
 
 ### Platform Support
 
