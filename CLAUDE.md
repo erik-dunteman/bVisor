@@ -66,7 +66,7 @@ src/
       FdTable.zig       # Per-process fd table, refcounted (shared on CLONE_FILES)
       OpenFile.zig            # Virtual FD union: kernel passthrough, proc files, COW files
     syscall/            # Syscall handlers
-      syscalls.zig      # Switch statement over syscalls, parseing notifications
+      syscalls.zig      # Switch statement over syscalls, parsing notifications
       handlers/
         OpenAt.zig      # openat handler with path rules (block/allow/virtualize)
         Writev.zig      # writev handler
