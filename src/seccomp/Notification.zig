@@ -11,11 +11,12 @@ const Self = @This();
 id: u64,
 backend: union(enum) {
     kernel: void, // The native kernel will handle the syscall
-    virtual: Syscall,
+    virtual: Syscall, // ERIK TODO: naming. standardize on names in ("kernel", "host", "virtual", "emulated", "conditionalVirtual", "supervisor", "guest", "parent", "child"
 },
 
 /// Parse a linux.SECCOMP.notif into a Notification
 pub fn fromNotif(notif: linux.SECCOMP.notif) !Self {
+    // ERIK TODO: remove NOTIFICATION entirely
     const supported = try Syscall.parse(notif);
 
     if (supported) |syscall| {
@@ -38,7 +39,7 @@ pub fn fromNotif(notif: linux.SECCOMP.notif) !Self {
 pub fn handleSyscall(self: Self, supervisor: *Supervisor) !Response {
     switch (self.backend) {
         .kernel => {
-            return Response.useKernel(self.id);
+            return Response.useKernel(self.id); // ERIK TODO: dumb, remove.
         },
         .virtual => |syscall| {
             const syscall_res = try syscall.handle(supervisor);

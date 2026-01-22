@@ -1,25 +1,20 @@
 const std = @import("std");
 const linux = std.os.linux;
-const Result = @import("../syscall.zig").Syscall.Result;
 const Supervisor = @import("../../../Supervisor.zig");
 const Proc = @import("../../proc/Proc.zig");
 const Procs = @import("../../proc/Procs.zig");
 const testing = std.testing;
 const makeNotif = @import("../../../seccomp/notif.zig").makeNotif;
+const replySuccess = @import("../../../seccomp/notif.zig").replySuccess;
+const isError = @import("../../../seccomp/notif.zig").isError;
 
-const Self = @This();
+pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
+    const caller_pid: Proc.KernelPID = @intCast(notif.pid);
 
-kernel_pid: Proc.KernelPID,
-
-pub fn parse(notif: linux.SECCOMP.notif) Self {
-    return .{ .kernel_pid = @intCast(notif.pid) };
-}
-
-pub fn handle(self: Self, supervisor: *Supervisor) !Result {
-    const proc = supervisor.virtual_procs.get(self.kernel_pid) catch |err| {
+    const proc = supervisor.virtual_procs.get(caller_pid) catch |err| {
         // getppid() never fails in the kernel - if we can't find the process,
         // it's a supervisor invariant violation
-        std.debug.panic("getppid: supervisor invariant violated - kernel pid {d} not in virtual_procs: {}", .{ self.kernel_pid, err });
+        std.debug.panic("getppid: supervisor invariant violated - kernel pid {d} not in virtual_procs: {}", .{ caller_pid, err });
     };
 
     // Return parent's kernel PID, or 0 if:
@@ -30,7 +25,7 @@ pub fn handle(self: Self, supervisor: *Supervisor) !Result {
     else
         0;
 
-    return Result.replySuccess(@intCast(ppid));
+    return replySuccess(notif.id, @intCast(ppid));
 }
 
 test "getppid for init process returns 0" {
@@ -40,11 +35,9 @@ test "getppid for init process returns 0" {
     defer supervisor.deinit();
 
     const notif = makeNotif(.getppid, .{ .pid = kernel_pid });
-    const parsed = Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-
-    try testing.expect(!res.isError());
-    try testing.expectEqual(@as(i64, 0), res.reply.val);
+    const resp = handle(notif, &supervisor);
+    try testing.expect(!isError(resp));
+    try testing.expectEqual(@as(i64, 0), resp.val);
 }
 
 test "getppid for child process returns parent kernel pid" {
@@ -60,12 +53,10 @@ test "getppid for child process returns parent kernel pid" {
 
     // Child calls getppid
     const notif = makeNotif(.getppid, .{ .pid = child_pid });
-    const parsed = Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-
-    try testing.expect(!res.isError());
+    const resp = handle(notif, &supervisor);
+    try testing.expect(!isError(resp));
     // Parent kernel PID
-    try testing.expectEqual(@as(i64, init_pid), res.reply.val);
+    try testing.expectEqual(@as(i64, init_pid), resp.val);
 }
 
 test "getppid for grandchild returns parent kernel pid" {
@@ -85,12 +76,11 @@ test "getppid for grandchild returns parent kernel pid" {
 
     // Grandchild calls getppid
     const notif = makeNotif(.getppid, .{ .pid = grandchild_pid });
-    const parsed = Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
+    const resp = handle(notif, &supervisor);
 
-    try testing.expect(!res.isError());
+    try testing.expect(!isError(resp));
     // Parent (child) kernel PID
-    try testing.expectEqual(@as(i64, child_pid), res.reply.val);
+    try testing.expectEqual(@as(i64, child_pid), resp.val);
 }
 
 test "getppid for CLONE_NEWPID child returns 0" {
@@ -106,10 +96,8 @@ test "getppid for CLONE_NEWPID child returns 0" {
 
     // Child calls getppid - parent is not visible in child's namespace
     const notif = makeNotif(.getppid, .{ .pid = child_pid });
-    const parsed = Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-
-    try testing.expect(!res.isError());
+    const resp = handle(notif, &supervisor);
+    try testing.expect(!isError(resp));
     // Parent not visible, returns 0
-    try testing.expectEqual(@as(i64, 0), res.reply.val);
+    try testing.expectEqual(@as(i64, 0), resp.val);
 }

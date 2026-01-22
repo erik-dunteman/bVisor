@@ -32,6 +32,14 @@ pub fn predictNotifyFd() !KernelFD {
 pub fn install() !KernelFD {
     // BPF program that triggers USER_NOTIF for all syscalls
     // In the future we can make this more restrictive
+
+    // ERIK TODO: need a better, unified way of replying to syscalls. We have too many abstractions
+    // Also hard blocks should come from here. Maybe comptime build this based on syscall coverage, that'd be sick
+    // Have syscall enums somewhere, get a get_blocked and get_passthrough comptime function so we don't have to litter
+    // The syscall enum with BPF concerns, still doing it here.
+    // Only fully virtualized syscalls and conditionally virtualized syscalls should make it to supervisor
+    // One big ol' syscalls enum with every syscall, of a variant.
+    // Then a handled_syscalls or otherwise named thing containing implementations. It shouldn't be too complicated.
     var instructions = [_]BPFInstruction{
         .{ .code = linux.BPF.RET | linux.BPF.K, .jt = 0, .jf = 0, .k = linux.SECCOMP.RET.USER_NOTIF },
     };

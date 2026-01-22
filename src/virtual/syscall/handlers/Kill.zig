@@ -1,74 +1,53 @@
 const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
-const Result = @import("../syscall.zig").Syscall.Result;
 const Supervisor = @import("../../../Supervisor.zig");
 const Proc = @import("../../proc/Proc.zig");
 const Procs = @import("../../proc/Procs.zig");
 const testing = std.testing;
 const makeNotif = @import("../../../seccomp/notif.zig").makeNotif;
+const replyErr = @import("../../../seccomp/notif.zig").replyErr;
+const replySuccess = @import("../../../seccomp/notif.zig").replySuccess;
+const isError = @import("../../../seccomp/notif.zig").isError;
 
-const Self = @This();
+pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
+    const caller_pid: Proc.KernelPID = @intCast(notif.pid);
+    const target_pid: Proc.KernelPID = @intCast(@as(i64, @bitCast(notif.data.arg0)));
+    const signal: u6 = @truncate(notif.data.arg1);
 
-kernel_pid: Proc.KernelPID, // caller's kernel pid
-target_pid: Proc.KernelPID, // arg0 (pid_t pid)
-signal: u6, // arg1 (int sig)
-
-pub fn parse(notif: linux.SECCOMP.notif) Self {
-    return .{
-        .kernel_pid = @intCast(notif.pid),
-        .target_pid = @intCast(@as(i64, @bitCast(notif.data.arg0))),
-        .signal = @truncate(notif.data.arg1),
-    };
-}
-
-pub fn handle(self: Self, supervisor: *Supervisor) !Result {
     // Negative PIDs (process groups) not supported
-    if (self.target_pid <= 0) {
-        return Result.replyErr(.INVAL);
+    if (target_pid <= 0) {
+        return replyErr(notif.id, .INVAL);
     }
 
-    const caller = supervisor.virtual_procs.get(self.kernel_pid) catch
-        return Result.replyErr(.SRCH);
+    const caller = supervisor.virtual_procs.get(caller_pid) catch
+        return replyErr(notif.id, .SRCH);
 
     // TODO ERIK get target via namespace reference frame, not from virtual_procs
     // also rename virtual_procs to "kernel_procs" and make the type of target_pid and args to namespace procs be virtualPID
     // caller.namespace.procs.get(self.target_pid) catch
     // const target: *Proc = caller.namespace.procs.get(self.target_pid)
 
-    const target = supervisor.virtual_procs.get(self.target_pid) catch
-        return Result.replyErr(.SRCH);
+    const target = supervisor.virtual_procs.get(target_pid) catch
+        return replyErr(notif.id, .SRCH);
 
     // Caller must be able to see target
     if (!caller.canSee(target)) {
-        return Result.replyErr(.SRCH);
+        return replyErr(notif.id, .SRCH);
     }
 
     // Execute real kill syscall
-    const sig: posix.SIG = @enumFromInt(self.signal);
+    const sig: posix.SIG = @enumFromInt(signal);
     posix.kill(@intCast(target.pid), sig) catch |err| {
         const errno: linux.E = switch (err) {
             error.PermissionDenied => .PERM,
             error.ProcessNotFound => .SRCH,
             else => .INVAL,
         };
-        return Result.replyErr(errno);
+        return replyErr(notif.id, errno);
     };
 
-    return Result.replySuccess(0);
-}
-
-test "parse extracts target pid and signal" {
-    const notif = makeNotif(.kill, .{
-        .pid = 100,
-        .arg0 = 200, // target kernel pid
-        .arg1 = 9, // SIGKILL
-    });
-
-    const parsed = Self.parse(notif);
-    try testing.expectEqual(@as(Proc.KernelPID, 100), parsed.kernel_pid);
-    try testing.expectEqual(@as(Proc.KernelPID, 200), parsed.target_pid);
-    try testing.expectEqual(@as(u6, 9), parsed.signal);
+    return replySuccess(notif.id, 0);
 }
 
 test "kill with negative pid returns EINVAL" {
@@ -82,11 +61,9 @@ test "kill with negative pid returns EINVAL" {
         .arg1 = 9,
     });
 
-    const parsed = Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-
-    try testing.expect(res.isError());
-    try testing.expectEqual(@as(i32, @intFromEnum(linux.E.INVAL)), res.reply.errno);
+    const resp = handle(notif, &supervisor);
+    try testing.expect(isError(resp));
+    try testing.expectEqual(@as(i32, @intFromEnum(linux.E.INVAL)), resp.@"error");
 }
 
 test "kill with zero pid returns EINVAL" {
@@ -100,9 +77,7 @@ test "kill with zero pid returns EINVAL" {
         .arg1 = 9,
     });
 
-    const parsed = Self.parse(notif);
-    const res = try parsed.handle(&supervisor);
-
-    try testing.expect(res.isError());
-    try testing.expectEqual(@as(i32, @intFromEnum(linux.E.INVAL)), res.reply.errno);
+    const resp = handle(notif, &supervisor);
+    try testing.expect(isError(resp));
+    try testing.expectEqual(@as(i32, @intFromEnum(linux.E.INVAL)), resp.@"error");
 }

@@ -28,6 +28,7 @@ pub inline fn lookupChildFdWithRetry(child_pid: linux.pid_t, local_fd: KernelFD,
             .Error => |err| switch (err) {
                 .BADF => {
                     // KernelFD doesn't exist yet in child - retry
+                    // ERIK TODO: why 1ms? why not exponential backoff? polling also seems gross
                     try io.sleep(std.Io.Duration.fromMilliseconds(1), .awake);
                     continue;
                 },
