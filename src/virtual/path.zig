@@ -1,9 +1,14 @@
 const std = @import("std");
-const FileBackend = @import("./file.zig").FileBackend;
+const FileBackend = @import("fs/file.zig").FileBackend;
+
+pub const RouteResult = union(enum) {
+    block: void,
+    handle: FileBackend,
+};
 
 pub fn route(path: []const u8) !RouteResult {
     // normalize ".." out of path
-    const buf: [512]u8 = undefined;
+    var buf: [512]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buf);
     const normalized = try std.fs.path.resolvePosix(fba.allocator(), &.{path});
 
@@ -11,12 +16,7 @@ pub fn route(path: []const u8) !RouteResult {
     return routeByPrefix(normalized, router_rules, global_default);
 }
 
-pub const RouteResult = union(enum) {
-    block: void,
-    handle: FileBackend,
-};
-
-fn routeByPrefix(path: []const u8, rules: []const Rule, default: RouteResult) !RouteResult {
+fn routeByPrefix(path: []const u8, rules: []const Rule, default: RouteResult) RouteResult {
     for (rules) |rule| {
         if (matchesPrefix(path, rule.prefix)) |remainder| {
             switch (rule.node) {
@@ -38,7 +38,8 @@ fn matchesPrefix(path: []const u8, prefix: []const u8) ?[]const u8 {
 }
 
 // Routing rules
-const global_default: RouteResult = .block;
+const global_default: RouteResult = .{ .handle = .cow };
+
 const router_rules: []const Rule = &.{
     // Hard blocks
     .{ .prefix = "/sys", .node = .{ .terminal = .block } },
@@ -51,11 +52,11 @@ const router_rules: []const Rule = &.{
     // /tmp/.bvisor contains per-sandbox data like cow and private /tmp files
     // block access to .bvisor
     // and redirect all others to virtual /tmp
-    .{ .prefix = "/tmp", .rule = .{ .branch = .{
-        .children = &.{
-            .{ .prefix = ".bvisor", .rule = .{ .terminal = .blocked } },
+    .{ .prefix = "/tmp", .node = .{ .branch = .{
+        .subrules = &.{
+            .{ .prefix = ".bvisor", .node = .{ .terminal = .block } },
         },
-        .default = .{ .allow = .tmp },
+        .default = .{ .handle = .tmp },
     } } },
 };
 
@@ -67,7 +68,7 @@ const Node = union(enum) {
     },
 };
 
-pub const Rule = struct {
+const Rule = struct {
     prefix: []const u8,
     node: Node,
 };

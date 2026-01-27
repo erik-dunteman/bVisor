@@ -3,7 +3,7 @@ const linux = std.os.linux;
 const posix = std.posix;
 const types = @import("../../../types.zig");
 const Proc = @import("../../proc/Proc.zig");
-const OpenFile = @import("../../fs/OpenFile.zig").OpenFile;
+const File = @import("../../fs/file.zig").File;
 const Supervisor = @import("../../../Supervisor.zig");
 const testing = std.testing;
 const makeNotif = @import("../../../seccomp/notif.zig").makeNotif;
@@ -47,14 +47,17 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
     // It's ok to only partially resolve count if count is larger than we're willing to stack allocate
     // This is valid POSIX behavior
     const max_len = 4096;
-    const max_buf: [max_len]u8 = undefined;
+    var max_buf: [max_len]u8 = undefined;
     const max_count = @min(count, max_len);
     const read_buf: []u8 = max_buf[0..max_count];
-    const n = try file.read(read_buf);
+    const n = file.read(read_buf) catch |err| {
+        logger.log("read: error reading from fd: {s}", .{@errorName(err)});
+        return replyErr(notif.id, .IO);
+    };
 
     // Copy into child memory
     if (n > 0) {
-        memory_bridge.writeSlice(read_buf, @intCast(notif.pid), buf_addr) catch {
+        memory_bridge.writeSlice(read_buf[0..n], @intCast(notif.pid), buf_addr) catch {
             return replyErr(notif.id, .FAULT);
         };
     }

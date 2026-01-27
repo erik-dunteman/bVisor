@@ -2,10 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const linux = std.os.linux;
 const posix = std.posix;
-const Proc = @import("../../../virtual/proc/Proc.zig");
-const Procs = @import("../../../virtual/proc/Procs.zig");
-const OpenFile = @import("../../../virtual/fs/OpenFile.zig").OpenFile;
-const FdTable = @import("../../../virtual/fs/FdTable.zig");
+const Proc = @import("../../proc/Proc.zig");
+const Procs = @import("../../proc/Procs.zig");
+const FdTable = @import("../../fs/FdTable.zig");
 const types = @import("../../../types.zig");
 const Supervisor = @import("../../../Supervisor.zig");
 const SupervisorFD = types.SupervisorFD;
@@ -14,8 +13,8 @@ const makeNotif = @import("../../../seccomp/notif.zig").makeNotif;
 const replySuccess = @import("../../../seccomp/notif.zig").replySuccess;
 const replyErr = @import("../../../seccomp/notif.zig").replyErr;
 const isError = @import("../../../seccomp/notif.zig").isError;
-const route = @import("../../../virtual/fs/path.zig").route;
-const File = @import("../../../virtual/fs/file.zig").File;
+const route = @import("../../path.zig").route;
+const File = @import("../../fs/file.zig").File;
 
 // comptime dependency injection
 const deps = @import("../../../deps/deps.zig");
@@ -51,17 +50,9 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         return replyErr(notif.id, .INVAL);
     }
 
-    const flags: linux.O = @bitCast(@as(u32, @truncate(notif.data.arg2)));
-    const mode: linux.mode_t = @truncate(notif.data.arg3);
-    const route_result = try route(path_slice);
-    switch (route_result) {
-        .block => {
-            return replyErr(notif.id, .PERM);
-        },
-        .handle => |backend| {
-            const file = try File.open(backend, path_slice, flags, mode);
-            const vfd = try proc.fd_table.insert(file);
-            return replySuccess(notif.id, @intCast(vfd));
-        },
-    }
+    //todo: implement once File backends are ready
+    _ = proc;
+    _ = notif.data.arg2; // flags
+    _ = notif.data.arg3; // mode
+    return replyErr(notif.id, .NOSYS);
 }

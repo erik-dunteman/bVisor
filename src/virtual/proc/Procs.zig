@@ -145,7 +145,7 @@ pub fn registerChild(self: *Self, parent: *Proc, child_pid: SupervisorPID, clone
     const fd_table: *FdTable = if (clone_flags.shareFiles())
         parent.fd_table.ref()
     else
-        try parent.fd_table.clone();
+        try parent.fd_table.clone(self.allocator);
     errdefer fd_table.unref();
 
     const child = try parent.initChild(self.allocator, child_pid, namespace, fd_table);

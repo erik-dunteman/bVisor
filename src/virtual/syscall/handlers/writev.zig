@@ -3,6 +3,8 @@ const linux = std.os.linux;
 const posix = std.posix;
 const types = @import("../../../types.zig");
 const SupervisorFD = types.SupervisorFD;
+const Proc = @import("../../proc/Proc.zig");
+const File = @import("../../fs/file.zig").File;
 const Supervisor = @import("../../../Supervisor.zig");
 const replyContinue = @import("../../../seccomp/notif.zig").replyContinue;
 const replySuccess = @import("../../../seccomp/notif.zig").replySuccess;
@@ -12,27 +14,48 @@ const replyErr = @import("../../../seccomp/notif.zig").replyErr;
 const deps = @import("../../../deps/deps.zig");
 const memory_bridge = deps.memory_bridge;
 
-const Self = @This();
-
 const MAX_IOV = 16;
 
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
+    const logger = supervisor.logger;
+
+    const pid: Proc.SupervisorPID = @intCast(notif.pid);
     const fd: i32 = @bitCast(@as(u32, @truncate(notif.data.arg0)));
+
+    // Continue in case of stdout or stderr
+    // In the future we'll virtualize this ourselves for more control of where logs go
+    if (fd == linux.STDOUT_FILENO or fd == linux.STDERR_FILENO) {
+        return replyContinue(notif.id);
+    }
+
+    // From here, fd is a virtualFD returned by openat
+    // Look up the calling process
+    const proc = supervisor.guest_procs.lookup.get(pid) orelse {
+        logger.log("writev: process not found for pid={d}", .{pid});
+        return replyErr(notif.id, .SRCH);
+    };
+
+    // Look up the file object
+    const file = proc.fd_table.get(fd) orelse {
+        logger.log("writev: EBADF for fd={d}", .{fd});
+        return replyErr(notif.id, .BADF);
+    };
+
+    // Read iovec array from child memory
     const iovec_ptr: u64 = notif.data.arg1;
     const iovec_count: usize = @min(@as(usize, @truncate(notif.data.arg2)), MAX_IOV);
     var iovecs: [MAX_IOV]posix.iovec_const = undefined;
     var data_buf: [4096]u8 = undefined;
     var data_len: usize = 0;
 
-    // Read iovec array from child memory
     for (0..iovec_count) |i| {
         const iov_addr = iovec_ptr + i * @sizeOf(posix.iovec_const);
-        iovecs[i] = memory_bridge.read(posix.iovec_const, @intCast(notif.pid), iov_addr) catch {
+        iovecs[i] = memory_bridge.read(posix.iovec_const, pid, iov_addr) catch {
             return replyErr(notif.id, .FAULT);
         };
     }
 
-    // Read buffer data from child memory for each iovec (one syscall per iovec)
+    // Read buffer data from child memory for each iovec
     for (0..iovec_count) |i| {
         const iov = iovecs[i];
         const buf_ptr = @intFromPtr(iov.base);
@@ -40,51 +63,19 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
 
         if (buf_len > 0) {
             const dest = data_buf[data_len..][0..buf_len];
-            memory_bridge.readSlice(dest, @intCast(notif.pid), buf_ptr) catch {
+            memory_bridge.readSlice(dest, pid, buf_ptr) catch {
                 return replyErr(notif.id, .FAULT);
             };
             data_len += buf_len;
         }
     }
 
-    const logger = supervisor.logger;
-    // TODO: supervisor.fs
+    // Write to the file
+    const n = file.write(data_buf[0..data_len]) catch |err| {
+        logger.log("writev: error writing to fd: {s}", .{@errorName(err)});
+        return replyErr(notif.id, .IO);
+    };
 
-    // Only handle stdout = stderr
-    const data = data_buf[0..data_len];
-    switch (fd) {
-        linux.STDOUT_FILENO => {
-            var stdout_buffer: [1024]u8 = undefined;
-            var stdout_writer = std.Io.File.stdout().writer(supervisor.io, &stdout_buffer);
-            const stdout = &stdout_writer.interface;
-            stdout.writeAll(data) catch {
-                logger.log("writev: error writing to stdout", .{});
-                return replyErr(notif.id, .IO);
-            };
-            stdout.flush() catch {
-                logger.log("writev: error flushing stdout", .{});
-                return replyErr(notif.id, .IO);
-            };
-        },
-        linux.STDERR_FILENO => {
-            var stderr_buffer: [1024]u8 = undefined;
-            var stderr_writer = std.Io.File.stderr().writer(supervisor.io, &stderr_buffer);
-            const stderr = &stderr_writer.interface;
-            stderr.writeAll(data) catch {
-                logger.log("writev: error writing to stderr", .{});
-                return replyErr(notif.id, .IO);
-            };
-            stderr.flush() catch {
-                logger.log("writev: error flushing stderr", .{});
-                return replyErr(notif.id, .IO);
-            };
-        },
-        else => {
-            // ERIK TODO
-            logger.log("writev to non-stdout/stderr fd={d} is not implemented", .{fd});
-            return replyErr(notif.id, .PERM);
-        },
-    }
-
-    return replySuccess(notif.id, @intCast(data_len));
+    logger.log("writev: wrote {d} bytes", .{n});
+    return replySuccess(notif.id, @intCast(n));
 }

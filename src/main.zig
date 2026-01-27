@@ -7,10 +7,7 @@ const smokeTest = @import("smoke_test.zig").smokeTest;
 test {
     _ = @import("Supervisor.zig");
     _ = @import("virtual/proc/Procs.zig");
-    _ = @import("virtual/fs/OpenFile.zig");
     _ = @import("virtual/fs/FdTable.zig");
-    _ = @import("virtual/fs/Cow.zig");
-    _ = @import("virtual/fs/Tmp.zig");
     _ = @import("virtual/syscall/handlers/exit_group.zig");
     _ = @import("virtual/syscall/handlers/getpid.zig");
     _ = @import("virtual/syscall/handlers/getppid.zig");

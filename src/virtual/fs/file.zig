@@ -1,33 +1,22 @@
-const Readonly = @import("./files/Readonly.zig");
-const Cow = @import("./files/Cow.zig");
-const Proc = @import("./files/Proc.zig");
-const Tmp = @import("./files/Tmp.zig");
-
 const std = @import("std");
 const posix = std.posix;
+const Cow = @import("backend/cow.zig").Cow;
+const Tmp = @import("backend/tmp.zig").Tmp;
+const Proc = @import("backend/proc.zig").Proc;
+const OverlayRoot = @import("../OverlayRoot.zig");
 
-const FileBackend = enum {
-    readonly,
-    cow,
-    proc,
-    tmp,
-};
+pub const FileBackend = enum { cow, tmp, proc };
 
-/// File is an FD-like handle on various virtualized file backends
-/// FdTable holds VirtualFD -> File mapping
-/// Implementations for File found in ./files
 pub const File = union(FileBackend) {
-    readonly: Readonly,
     cow: Cow,
-    proc: Proc,
     tmp: Tmp,
+    proc: Proc,
 
-    pub fn open(file_backend: FileBackend, path: []const u8, flags: posix.O, mode: posix.mode_t) !File {
-        return switch (file_backend) {
-            .readonly => .{ .readonly = try Readonly.open(path, flags, mode) },
-            .cow => .{ .cow = try Cow.open(path, flags, mode) },
+    pub fn open(backend: FileBackend, path: []const u8, flags: posix.O, mode: posix.mode_t, overlay: *OverlayRoot) !File {
+        return switch (backend) {
+            .cow => .{ .cow = try Cow.open(path, flags, mode, overlay) },
+            .tmp => .{ .tmp = try Tmp.open(path, flags, mode, overlay) },
             .proc => .{ .proc = try Proc.open(path, flags, mode) },
-            .tmp => .{ .tmp = try Tmp.open(path, flags, mode) },
         };
     }
 
