@@ -3,6 +3,8 @@ const linux = std.os.linux;
 const posix = std.posix;
 const Supervisor = @import("../../../Supervisor.zig");
 const Proc = @import("../../proc/Proc.zig");
+const AbsPid = Proc.AbsPid;
+const NsPid = Proc.NsPid;
 const Procs = @import("../../proc/Procs.zig");
 const testing = std.testing;
 const makeNotif = @import("../../../seccomp/notif.zig").makeNotif;
@@ -11,8 +13,8 @@ const replySuccess = @import("../../../seccomp/notif.zig").replySuccess;
 const isError = @import("../../../seccomp/notif.zig").isError;
 
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
-    const caller_pid: Proc.SupervisorPID = @intCast(notif.pid);
-    const target_pid: Proc.GuestPID = @intCast(@as(i64, @bitCast(notif.data.arg0)));
+    const caller_pid: AbsPid = @intCast(notif.pid);
+    const target_pid: NsPid = @intCast(@as(i64, @bitCast(notif.data.arg0)));
     const signal: u6 = @truncate(notif.data.arg1);
 
     // Non-positive PIDs (process groups) not supported
@@ -31,7 +33,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         return replyErr(notif.id, .SRCH);
 
     // Caller must be able to see target
-    // TODO: rethink, this lookup is all messed up and ignores GuestPIDs being an option
+    // TODO: rethink, this lookup is all messed up and ignores NsPids being an option
     if (!caller_proc.canSee(target_proc)) {
         return replyErr(notif.id, .SRCH);
     }

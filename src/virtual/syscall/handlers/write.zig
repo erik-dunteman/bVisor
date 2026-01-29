@@ -3,6 +3,7 @@ const linux = std.os.linux;
 const posix = std.posix;
 const types = @import("../../../types.zig");
 const Proc = @import("../../proc/Proc.zig");
+const AbsPid = Proc.AbsPid;
 const OpenFile = @import("../../fs/OpenFile.zig").OpenFile;
 const Supervisor = @import("../../../Supervisor.zig");
 const testing = std.testing;
@@ -16,7 +17,7 @@ const deps = @import("../../../deps/deps.zig");
 const memory_bridge = deps.memory_bridge;
 
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
-    const supervisor_pid: Proc.SupervisorPID = @intCast(notif.pid);
+    const supervisor_pid: AbsPid = @intCast(notif.pid);
     const fd: i32 = @bitCast(@as(u32, @truncate(notif.data.arg0)));
     const buf_ptr: u64 = notif.data.arg1;
     const count: usize = @truncate(notif.data.arg2);
@@ -101,7 +102,7 @@ test "write to stderr returns success" {
     // The below passes, but for reason similar to above, the prints cause zig test to format weird
 
     //     const allocator = testing.allocator;
-    //     const guest_pid: Proc.SupervisorPID = 100;
+    //     const guest_pid: AbsPid = 100;
     //     var supervisor = try Supervisor.init(allocator, testing.io, -1, guest_pid);
     //     defer supervisor.deinit();
 
@@ -120,7 +121,7 @@ test "write to stderr returns success" {
 
 test "write to invalid fd returns EBADF" {
     const allocator = testing.allocator;
-    const guest_pid: Proc.SupervisorPID = 100;
+    const guest_pid: AbsPid = 100;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, guest_pid);
     defer supervisor.deinit();
 
@@ -139,7 +140,7 @@ test "write to invalid fd returns EBADF" {
 
 test "write to kernel fd works" {
     const allocator = testing.allocator;
-    const guest_pid: Proc.SupervisorPID = 100;
+    const guest_pid: AbsPid = 100;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, guest_pid);
     defer supervisor.deinit();
 

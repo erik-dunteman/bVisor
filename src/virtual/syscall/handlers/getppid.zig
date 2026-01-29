@@ -2,6 +2,8 @@ const std = @import("std");
 const linux = std.os.linux;
 const Supervisor = @import("../../../Supervisor.zig");
 const Proc = @import("../../proc/Proc.zig");
+const AbsPid = Proc.AbsPid;
+const NsPid = Proc.NsPid;
 const Procs = @import("../../proc/Procs.zig");
 const proc_info = @import("../../../deps/deps.zig").proc_info;
 const testing = std.testing;
@@ -10,7 +12,7 @@ const replySuccess = @import("../../../seccomp/notif.zig").replySuccess;
 const isError = @import("../../../seccomp/notif.zig").isError;
 
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
-    const caller_pid: Proc.SupervisorPID = @intCast(notif.pid);
+    const caller_pid: AbsPid = @intCast(notif.pid);
 
     // Sync supervisor's procs with the kernel
     supervisor.guest_procs.syncNewProcs() catch {};
@@ -24,7 +26,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
     // Return parent's kernel PID, or 0 if:
     // - No parent (sandbox root)
     // - Parent not visible (e.g., in CLONE_NEWPID case where parent is in different namespace)
-    const ppid: Proc.SupervisorPID = if (caller_proc.parent) |p|
+    const ppid: AbsPid = if (caller_proc.parent) |p|
         if (caller_proc.canSee(p)) p.pid else 0
     else
         0;
@@ -34,7 +36,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
 
 test "getppid for init process returns 0" {
     const allocator = testing.allocator;
-    const supervisor_pid: Proc.SupervisorPID = 12345;
+    const supervisor_pid: AbsPid = 12345;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, supervisor_pid);
     defer supervisor.deinit();
 
@@ -46,12 +48,12 @@ test "getppid for init process returns 0" {
 
 test "getppid for immediate child process returns parent supervisor pid" {
     const allocator = testing.allocator;
-    const init_pid: Proc.SupervisorPID = 100;
+    const init_pid: AbsPid = 100;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
     defer supervisor.deinit();
 
     // Add a guest process
-    const guest_pid: Proc.SupervisorPID = 200;
+    const guest_pid: AbsPid = 200;
     const parent = supervisor.guest_procs.lookup.get(init_pid).?;
     _ = try supervisor.guest_procs.registerChild(parent, guest_pid, Procs.CloneFlags.from(0));
 
@@ -65,16 +67,16 @@ test "getppid for immediate child process returns parent supervisor pid" {
 
 test "getppid for grandchild returns parent supervisor pid" {
     const allocator = testing.allocator;
-    const init_pid: Proc.SupervisorPID = 100;
+    const init_pid: AbsPid = 100;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
     defer supervisor.deinit();
 
     // Create: init(100) -> child(200) -> grandchild(300)
-    const guest_pid: Proc.SupervisorPID = 200;
+    const guest_pid: AbsPid = 200;
     const parent = supervisor.guest_procs.lookup.get(init_pid).?;
     _ = try supervisor.guest_procs.registerChild(parent, guest_pid, Procs.CloneFlags.from(0));
 
-    const grandguest_pid: Proc.SupervisorPID = 300;
+    const grandguest_pid: AbsPid = 300;
     const child = supervisor.guest_procs.lookup.get(guest_pid).?;
     _ = try supervisor.guest_procs.registerChild(child, grandguest_pid, Procs.CloneFlags.from(0));
 
@@ -89,14 +91,14 @@ test "getppid for grandchild returns parent supervisor pid" {
 
 test "getppid for CLONE_NEWPID immediate child returns 0" {
     const allocator = testing.allocator;
-    const init_pid: Proc.SupervisorPID = 100;
+    const init_pid: AbsPid = 100;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
     defer supervisor.deinit();
     defer proc_info.testing.reset(allocator);
 
     // Child in new namespace (depth 2, PID 1 in its own namespace)
-    const guest_pid: Proc.SupervisorPID = 200;
-    const nspids = [_]Proc.GuestPID{ 200, 1 };
+    const guest_pid: AbsPid = 200;
+    const nspids = [_]NsPid{ 200, 1 };
     try proc_info.testing.setupNsPids(allocator, guest_pid, &nspids);
 
     const parent = supervisor.guest_procs.lookup.get(init_pid).?;

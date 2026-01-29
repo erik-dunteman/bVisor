@@ -3,6 +3,7 @@ const linux = std.os.linux;
 const posix = std.posix;
 const types = @import("../../../types.zig");
 const Proc = @import("../../proc/Proc.zig");
+const AbsPid = Proc.AbsPid;
 const OpenFile = @import("../../fs/OpenFile.zig").OpenFile;
 const openat = @import("openat.zig");
 const Supervisor = @import("../../../Supervisor.zig");
@@ -21,7 +22,7 @@ const memory_bridge = deps.memory_bridge;
 const MAX_IOV = 16;
 
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
-    const supervisor_pid: Proc.SupervisorPID = @intCast(notif.pid);
+    const supervisor_pid: AbsPid = @intCast(notif.pid);
     const fd: i32 = @bitCast(@as(u32, @truncate(notif.data.arg0)));
     const iovec_ptr: u64 = notif.data.arg1;
     const iovec_count: usize = @min(@as(usize, @truncate(notif.data.arg2)), MAX_IOV);
@@ -89,7 +90,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
 
 test "readv from proc fd returns pid" {
     const allocator = testing.allocator;
-    const guest_pid: Proc.SupervisorPID = 200;
+    const guest_pid: AbsPid = 200;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, guest_pid);
     defer supervisor.deinit();
 
@@ -133,7 +134,7 @@ test "readv from proc fd returns pid" {
 
 test "readv from invalid fd returns EBADF" {
     const allocator = testing.allocator;
-    const guest_pid: Proc.SupervisorPID = 100;
+    const guest_pid: AbsPid = 100;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, guest_pid);
     defer supervisor.deinit();
 
@@ -156,7 +157,7 @@ test "readv from invalid fd returns EBADF" {
 
 test "readv from stdin returns continue" {
     const allocator = testing.allocator;
-    const guest_pid: Proc.SupervisorPID = 100;
+    const guest_pid: AbsPid = 100;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, guest_pid);
     defer supervisor.deinit();
 

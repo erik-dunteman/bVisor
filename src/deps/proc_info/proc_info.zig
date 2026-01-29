@@ -6,8 +6,8 @@ else
     @import("impl/linux.zig");
 
 const Proc = @import("../../virtual/proc/Proc.zig");
-pub const SupervisorPID = Proc.SupervisorPID;
-pub const GuestPID = Proc.GuestPID;
+pub const AbsPid = Proc.AbsPid;
+pub const NsPid = Proc.NsPid;
 pub const CloneFlags = @import("../../virtual/proc/Procs.zig").CloneFlags;
 
 pub const detectCloneFlags = impl.detectCloneFlags;

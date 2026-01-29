@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const linux = std.os.linux;
 const posix = std.posix;
 const Proc = @import("../../../virtual/proc/Proc.zig");
+const AbsPid = Proc.AbsPid;
 const Procs = @import("../../../virtual/proc/Procs.zig");
 const OpenFile = @import("../../../virtual/fs/OpenFile.zig").OpenFile;
 const FdTable = @import("../../../virtual/fs/FdTable.zig");
@@ -189,7 +190,7 @@ fn cowErrorToLinuxErrno(err: anytype) linux.E {
 
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
     const logger = supervisor.logger;
-    const supervisor_pid: Proc.SupervisorPID = @intCast(notif.pid);
+    const supervisor_pid: AbsPid = @intCast(notif.pid);
 
     // Parse arguments
     const path_ptr: u64 = notif.data.arg1;
@@ -230,7 +231,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
 
 fn handleVirtualizeProc(
     notif_id: u64,
-    supervisor_pid: Proc.SupervisorPID,
+    supervisor_pid: AbsPid,
     path_slice: []const u8,
     supervisor: *Supervisor,
 ) linux.SECCOMP.notif_resp {
@@ -249,10 +250,10 @@ fn handleVirtualizeProc(
 
     // Determine target pid
     // Format: /proc/self/..., /proc/<pid>/..., or global files like /proc/meminfo
-    const target_pid: Proc.SupervisorPID = if (std.mem.eql(u8, pid_part, "self"))
+    const target_pid: AbsPid = if (std.mem.eql(u8, pid_part, "self"))
         proc.pid
     else
-        std.fmt.parseInt(Proc.SupervisorPID, pid_part, 10) catch
+        std.fmt.parseInt(AbsPid, pid_part, 10) catch
             // Not a numeric pid - global proc file (e.g., meminfo, cpuinfo)
             // Use caller's pid as placeholder
             proc.pid;
@@ -279,7 +280,7 @@ fn handleVirtualizeProc(
 
 fn handleVirtualizeTmp(
     notif_id: u64,
-    supervisor_pid: Proc.SupervisorPID,
+    supervisor_pid: AbsPid,
     path_slice: []const u8,
     flags: linux.O,
     mode: linux.mode_t,
@@ -310,7 +311,7 @@ fn handleVirtualizeTmp(
 
 fn handleAllow(
     notif_id: u64,
-    supervisor_pid: Proc.SupervisorPID,
+    supervisor_pid: AbsPid,
     dirfd: SupervisorFD,
     path_slice: []const u8,
     flags: linux.O,
@@ -387,7 +388,7 @@ fn handleAllow(
 
 test "openat blocks /sys and /run paths" {
     const allocator = std.testing.allocator;
-    const guest_pid: Proc.SupervisorPID = 100;
+    const guest_pid: AbsPid = 100;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, guest_pid);
     defer supervisor.deinit();
 
@@ -418,7 +419,7 @@ test "useVFS detects write modes" {
 
 test "openat virtualizes /proc paths" {
     const allocator = std.testing.allocator;
-    const guest_pid: Proc.SupervisorPID = 12345;
+    const guest_pid: AbsPid = 12345;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, guest_pid);
     defer supervisor.deinit();
 
@@ -435,7 +436,7 @@ test "openat virtualizes /proc paths" {
 
 test "openat handles allowed paths (returns NOENT for missing file)" {
     const allocator = std.testing.allocator;
-    const guest_pid: Proc.SupervisorPID = 100;
+    const guest_pid: AbsPid = 100;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, guest_pid);
     defer supervisor.deinit();
 
@@ -453,7 +454,7 @@ test "openat handles allowed paths (returns NOENT for missing file)" {
 
 test "openat O_CREAT creates file, write and read back" {
     const allocator = std.testing.allocator;
-    const guest_pid: Proc.SupervisorPID = 100;
+    const guest_pid: AbsPid = 100;
     var supervisor = try Supervisor.init(allocator, testing.io, -1, guest_pid);
     defer supervisor.deinit();
 
