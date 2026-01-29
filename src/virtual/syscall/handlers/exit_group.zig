@@ -5,7 +5,7 @@ const Proc = @import("../../proc/Proc.zig");
 const replyContinue = @import("../../../seccomp/notif.zig").replyContinue;
 
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
-    const caller_pid: Proc.SupervisorPID = @intCast(notif.pid);
+    const caller_pid: Proc.AbsPid = @intCast(notif.pid);
 
     // Clean up virtual proc entry before kernel handles the exit
     // Ignore errors - process may have already been cleaned up

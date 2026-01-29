@@ -6,6 +6,7 @@ const smokeTest = @import("smoke_test.zig").smokeTest;
 
 test {
     _ = @import("Supervisor.zig");
+    _ = @import("deps/proc_info/impl/linux.zig");
     _ = @import("virtual/proc/Procs.zig");
     _ = @import("virtual/fs/OpenFile.zig");
     _ = @import("virtual/fs/FdTable.zig");
