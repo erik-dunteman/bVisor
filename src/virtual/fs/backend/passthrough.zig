@@ -30,10 +30,58 @@ const builtin = @import("builtin");
 
 // For testing we use known /dev paths
 
-test "open /dev/null succeeds" {}
+test "open /dev/null succeeds" {
+    const io = testing.io;
+    const uid: [16]u8 = "testtesttesttest".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
 
-test "write to /dev/null succeeds" {}
+    var file = try Passthrough.open(&overlay, "/dev/null", .{ .ACCMODE = .RDWR }, 0);
+    defer file.close();
 
-test "read from /dev/null returns 0 (EOF)" {}
+    try testing.expect(file.fd >= 0);
+}
 
-test "read from /dev/zero returns zeros" {}
+test "write to /dev/null succeeds" {
+    const io = testing.io;
+    const uid: [16]u8 = "testtesttesttest".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    var file = try Passthrough.open(&overlay, "/dev/null", .{ .ACCMODE = .WRONLY }, 0);
+    defer file.close();
+
+    const n = try file.write("hello");
+    try testing.expectEqual(5, n);
+}
+
+test "read from /dev/null returns 0 (EOF)" {
+    const io = testing.io;
+    const uid: [16]u8 = "testtesttesttest".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    var file = try Passthrough.open(&overlay, "/dev/null", .{ .ACCMODE = .RDONLY }, 0);
+    defer file.close();
+
+    var buf: [16]u8 = undefined;
+    const n = try file.read(&buf);
+    try testing.expectEqual(0, n);
+}
+
+test "read from /dev/zero returns zeros" {
+    const io = testing.io;
+    const uid: [16]u8 = "testtesttesttest".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    var file = try Passthrough.open(&overlay, "/dev/zero", .{ .ACCMODE = .RDONLY }, 0);
+    defer file.close();
+
+    var buf: [16]u8 = undefined;
+    const n = try file.read(&buf);
+    try testing.expectEqual(16, n);
+
+    const zeros: [16]u8 = .{0} ** 16;
+    try testing.expectEqualSlices(u8, &zeros, buf[0..n]);
+}
