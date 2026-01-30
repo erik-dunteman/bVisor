@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const linux = std.os.linux;
 const Allocator = std.mem.Allocator;
 
@@ -8,9 +9,14 @@ const proc_info = deps.proc_info;
 pub const Proc = @import("Proc.zig");
 pub const Namespace = @import("Namespace.zig");
 pub const FdTable = @import("../fs/FdTable.zig");
-pub const SupervisorPID = Proc.SupervisorPID;
+pub const AbsPid = Proc.AbsPid;
+pub const NsPid = Proc.NsPid;
+pub const ProcStatus = @import("ProcStatus.zig");
+pub const detectCloneFlags = proc_info.detectCloneFlags;
+pub const getStatus = proc_info.getStatus;
+pub const listPids = proc_info.listPids;
 
-const ProcLookup = std.AutoHashMapUnmanaged(SupervisorPID, *Proc);
+const ProcLookup = std.AutoHashMapUnmanaged(AbsPid, *Proc);
 
 const Self = @This();
 
@@ -73,55 +79,72 @@ pub fn deinit(self: *Self) void {
     self.lookup.deinit(self.allocator);
 }
 
-/// Get a proc by kernel PID. Performs a kernel lookup for unknown children.
-pub fn get(self: *Self, pid: SupervisorPID) !*Proc {
-    // proc already in our tree
+/// Get the process of this pid from self.lookup
+pub fn get(self: *Self, pid: AbsPid) !*Proc {
     if (self.lookup.get(pid)) |proc| return proc;
+    return error.ProcNotRegistered;
+}
 
-    // proc not in our tree. It and (maybe) its ancestors need to get registered.
+/// Recursive lazy registration of processes if necessary
+fn ensureRegistered(
+    self: *Self,
+    status_map: *std.AutoHashMap(AbsPid, ProcStatus),
+    pid: AbsPid,
+) !void {
+    // If already registered, done
+    if (self.lookup.contains(pid)) return;
 
-    // walk the kernel API until we hit a known process
-    // note: must protect against escapes where init_pid is not in the lineage
-    var lineage: std.ArrayList(SupervisorPID) = try .initCapacity(self.allocator, 10);
-    defer lineage.deinit(self.allocator);
+    // Get cached status (ppid and namespace info)
+    const status = status_map.get(pid) orelse return error.ProcNotInKernel;
+    const ppid = status.ppid;
 
-    var child_pid = pid;
-    var nearest_registered_proc: ?*Proc = null;
-    while (true) {
-        try lineage.append(self.allocator, child_pid);
-
-        // ask kernel for parent pid
-        const ppid = try proc_info.readPpid(child_pid);
-
-        // check if parent in our tree
-        if (self.lookup.get(ppid)) |parent_proc| {
-            // no need to walk higher
-            nearest_registered_proc = parent_proc;
-            break;
-        }
-
-        if (ppid <= 1) return error.ProcNotInSandbox; // escaped past init_pid
-
-        child_pid = ppid;
+    // Ensure parent is registered first (recursive call)
+    if (!self.lookup.contains(ppid)) {
+        // Stop recursion if we've reached init or outside sandbox
+        if (ppid <= 1) return error.ProcNotInSandbox;
+        try self.ensureRegistered(status_map, ppid);
     }
 
-    if (nearest_registered_proc == null) unreachable;
+    // Get the parent proc (must be registered now)
+    const parent = self.lookup.get(ppid) orelse return error.ParentNotRegistered;
 
-    // if no error, lineage is fully in sandbox
-    // register any unknown procs in reverse order
-    var current_parent = nearest_registered_proc.?;
-    var i = lineage.items.len;
-    while (i > 0) : (i -= 1) {
-        child_pid = lineage.items[i - 1];
-        const flags = proc_info.detectCloneFlags(current_parent.pid, child_pid);
-        current_parent = try self.registerChild(current_parent, child_pid, flags);
+    // Detect clone flags and register this process
+    const flags = detectCloneFlags(ppid, pid);
+    _ = try self.registerChild(parent, pid, flags);
+}
+
+/// Confer with the kernel to check for any guest processes
+/// which might need to be lazily added.
+///
+/// This scans /proc once to collect status for all PIDs, then recursively
+/// registers any missing processes using the cached status data.
+pub fn syncNewProcs(
+    self: *Self,
+) !void {
+    var status_map = std.AutoHashMap(AbsPid, ProcStatus).init(self.allocator);
+    defer status_map.deinit();
+
+    // Scan /proc and collect status for all PIDs
+    const pids = try listPids(self.allocator);
+    defer self.allocator.free(pids);
+
+    for (pids) |pid| {
+        const status = getStatus(pid) catch continue;
+        try status_map.put(pid, status);
     }
 
-    return current_parent;
+    // Try to register all PIDs (ancestors before descendants)
+    var iter = status_map.keyIterator();
+    while (iter.next()) |pid_ptr| {
+        self.ensureRegistered(&status_map, pid_ptr.*) catch continue;
+    }
+
+    // TODO?: processes that no longer exist in the kernel should be deleted
+    // Would involve calling handleProcessExit() on whichever PIDs have disappeared
 }
 
 /// Register the initial sandbox root process
-pub fn handleInitialProcess(self: *Self, pid: SupervisorPID) !void {
+pub fn handleInitialProcess(self: *Self, pid: AbsPid) !void {
     if (self.lookup.count() != 0) return error.InitialProcessExists;
 
     // passing null namespace/fd_table creates new ones
@@ -132,7 +155,12 @@ pub fn handleInitialProcess(self: *Self, pid: SupervisorPID) !void {
 }
 
 /// Register a child process with given parent and flags
-pub fn registerChild(self: *Self, parent: *Proc, child_pid: SupervisorPID, clone_flags: CloneFlags) !*Proc {
+pub fn registerChild(
+    self: *Self,
+    parent: *Proc,
+    child_pid: AbsPid,
+    clone_flags: CloneFlags,
+) !*Proc {
     try clone_flags.checkSupported();
 
     // CLONE_NEWPID creates a new PID namespace; otherwise inherit parent's
@@ -156,7 +184,7 @@ pub fn registerChild(self: *Self, parent: *Proc, child_pid: SupervisorPID, clone
     return child;
 }
 
-pub fn handleProcessExit(self: *Self, pid: SupervisorPID) !void {
+pub fn handleProcessExit(self: *Self, pid: AbsPid) !void {
     const target_proc = self.lookup.get(pid) orelse return;
 
     // remove target from parent's children
@@ -329,7 +357,7 @@ test "deep nesting" {
     defer v_procs.deinit();
 
     // chain: a -> b -> c -> d -> e
-    var pids = [_]SupervisorPID{ 10, 20, 30, 40, 50 };
+    var pids = [_]AbsPid{ 10, 20, 30, 40, 50 };
 
     try v_procs.handleInitialProcess(pids[0]);
     for (1..5) |i| {
@@ -355,7 +383,7 @@ test "wide tree with many siblings" {
 
     // add 10 children
     for (1..11) |i| {
-        const child_pid: SupervisorPID = @intCast(100 + i);
+        const child_pid: AbsPid = @intCast(100 + i);
         _ = try v_procs.registerChild(parent, child_pid, CloneFlags.from(0));
     }
 
@@ -380,7 +408,7 @@ test "nested namespace - visibility rules" {
     // B: child of A but root of new namespace (CLONE_NEWPID)
     // B is PID 1 in its own namespace, 200 from root namespace view
     const b_pid = 200;
-    const b_nspids = [_]Proc.GuestPID{ 200, 1 };
+    const b_nspids = [_]NsPid{ 200, 1 };
     try proc_info.testing.setupNsPids(allocator, b_pid, &b_nspids);
     _ = try v_procs.registerChild(a_proc, b_pid, CloneFlags.from(linux.CLONE.NEWPID));
     const b_proc = v_procs.lookup.get(b_pid).?;
@@ -391,7 +419,7 @@ test "nested namespace - visibility rules" {
     // C: child of B in ns2
     // C is PID 2 in B's namespace, 300 from root namespace view
     const c_pid = 300;
-    const c_nspids = [_]Proc.GuestPID{ 300, 2 };
+    const c_nspids = [_]NsPid{ 300, 2 };
     try proc_info.testing.setupNsPids(allocator, c_pid, &c_nspids);
     _ = try v_procs.registerChild(b_proc, c_pid, CloneFlags.from(0));
     const c_proc = v_procs.lookup.get(c_pid).?;
@@ -429,14 +457,14 @@ test "nested namespace - killing parent kills nested namespace" {
 
     // B: namespace root, PID 1 in its namespace
     const b_pid = 200;
-    const b_nspids = [_]Proc.GuestPID{ 200, 1 };
+    const b_nspids = [_]NsPid{ 200, 1 };
     try proc_info.testing.setupNsPids(allocator, b_pid, &b_nspids);
     _ = try v_procs.registerChild(a_proc, b_pid, CloneFlags.from(linux.CLONE.NEWPID));
     const b_proc = v_procs.lookup.get(b_pid).?;
 
     // C: PID 2 in B's namespace
     const c_pid = 300;
-    const c_nspids = [_]Proc.GuestPID{ 300, 2 };
+    const c_nspids = [_]NsPid{ 300, 2 };
     try proc_info.testing.setupNsPids(allocator, c_pid, &c_nspids);
     _ = try v_procs.registerChild(b_proc, c_pid, CloneFlags.from(0));
 
@@ -464,28 +492,28 @@ test "nested namespace - killing grandparent kills all" {
 
     // B: ns2 root, depth 2
     const b_pid = 200;
-    const b_nspids = [_]Proc.GuestPID{ 200, 1 };
+    const b_nspids = [_]NsPid{ 200, 1 };
     try proc_info.testing.setupNsPids(allocator, b_pid, &b_nspids);
     _ = try v_procs.registerChild(a_proc, b_pid, CloneFlags.from(linux.CLONE.NEWPID));
     const b_proc = v_procs.lookup.get(b_pid).?;
 
     // C: in ns2, depth 2
     const c_pid = 300;
-    const c_nspids = [_]Proc.GuestPID{ 300, 2 };
+    const c_nspids = [_]NsPid{ 300, 2 };
     try proc_info.testing.setupNsPids(allocator, c_pid, &c_nspids);
     _ = try v_procs.registerChild(b_proc, c_pid, CloneFlags.from(0));
     const c_proc = v_procs.lookup.get(c_pid).?;
 
     // D: ns3 root, depth 3
     const d_pid = 400;
-    const d_nspids = [_]Proc.GuestPID{ 400, 3, 1 };
+    const d_nspids = [_]NsPid{ 400, 3, 1 };
     try proc_info.testing.setupNsPids(allocator, d_pid, &d_nspids);
     _ = try v_procs.registerChild(c_proc, d_pid, CloneFlags.from(linux.CLONE.NEWPID));
     const d_proc = v_procs.lookup.get(d_pid).?;
 
     // E: in ns3, depth 3
     const e_pid = 500;
-    const e_nspids = [_]Proc.GuestPID{ 500, 4, 2 };
+    const e_nspids = [_]NsPid{ 500, 4, 2 };
     try proc_info.testing.setupNsPids(allocator, e_pid, &e_nspids);
     _ = try v_procs.registerChild(d_proc, e_pid, CloneFlags.from(0));
 
@@ -536,7 +564,7 @@ test "can_see - child namespace cannot see parent-only procs" {
     const a = v_procs.lookup.get(100).?;
 
     // B is in new namespace (depth 2)
-    const b_nspids = [_]Proc.GuestPID{ 200, 1 };
+    const b_nspids = [_]NsPid{ 200, 1 };
     try proc_info.testing.setupNsPids(allocator, 200, &b_nspids);
     _ = try v_procs.registerChild(a, 200, CloneFlags.from(linux.CLONE.NEWPID));
     const b = v_procs.lookup.get(200).?;
@@ -545,171 +573,6 @@ test "can_see - child namespace cannot see parent-only procs" {
     try std.testing.expect(a.canSee(b));
     // B cannot see A (A is only in parent namespace)
     try std.testing.expect(!b.canSee(a));
-}
-
-// ============================================================================
-// Out-of-Order Discovery Tests (using mocked proc_info)
-// ============================================================================
-
-test "grandchild syscalls before child - recursive registration" {
-    const allocator = std.testing.allocator;
-    var v_procs = Self.init(allocator);
-    defer v_procs.deinit();
-    defer proc_info.testing.reset(allocator);
-
-    // Register root process 100
-    try v_procs.handleInitialProcess(100);
-    try std.testing.expectEqual(1, v_procs.lookup.count());
-
-    // Setup mock: grandchild 300 has parent 200, child 200 has parent 100
-    try proc_info.testing.setupParent(allocator, 300, 200);
-    try proc_info.testing.setupParent(allocator, 200, 100);
-
-    // Grandchild 300 makes a syscall - triggers recursive registration
-    const proc_300 = try v_procs.get(300);
-
-    // Both 200 and 300 should now be registered
-    try std.testing.expectEqual(3, v_procs.lookup.count());
-    try std.testing.expect(v_procs.lookup.get(100) != null);
-    try std.testing.expect(v_procs.lookup.get(200) != null);
-    try std.testing.expect(v_procs.lookup.get(300) != null);
-
-    // Verify parent-child relationships
-    const proc_200 = v_procs.lookup.get(200).?;
-    const proc_100 = v_procs.lookup.get(100).?;
-    try std.testing.expectEqual(proc_100, proc_200.parent.?);
-    try std.testing.expectEqual(proc_200, proc_300.parent.?);
-}
-
-test "multiple children - grandchild first, then siblings" {
-    const allocator = std.testing.allocator;
-    var v_procs = Self.init(allocator);
-    defer v_procs.deinit();
-    defer proc_info.testing.reset(allocator);
-
-    // Register root process 100
-    try v_procs.handleInitialProcess(100);
-
-    // Setup mock relationships:
-    // 100 -> 200 -> 300
-    // 100 -> 201
-    try proc_info.testing.setupParent(allocator, 300, 200);
-    try proc_info.testing.setupParent(allocator, 200, 100);
-    try proc_info.testing.setupParent(allocator, 201, 100);
-
-    // Grandchild 300 syscalls first (discovers 200 recursively)
-    _ = try v_procs.get(300);
-    try std.testing.expectEqual(3, v_procs.lookup.count());
-
-    // Child 200 syscalls - already registered
-    _ = try v_procs.get(200);
-    try std.testing.expectEqual(3, v_procs.lookup.count());
-
-    // Sibling 201 syscalls - new registration
-    _ = try v_procs.get(201);
-    try std.testing.expectEqual(4, v_procs.lookup.count());
-
-    // Verify tree structure
-    const proc_100 = v_procs.lookup.get(100).?;
-    try std.testing.expectEqual(2, proc_100.children.count()); // 200 and 201
-}
-
-test "deep chain discovery - great-grandchild first" {
-    const allocator = std.testing.allocator;
-    var v_procs = Self.init(allocator);
-    defer v_procs.deinit();
-    defer proc_info.testing.reset(allocator);
-
-    // Register root process 100
-    try v_procs.handleInitialProcess(100);
-
-    // Setup mock: chain 400 -> 300 -> 200 -> 100
-    try proc_info.testing.setupParent(allocator, 400, 300);
-    try proc_info.testing.setupParent(allocator, 300, 200);
-    try proc_info.testing.setupParent(allocator, 200, 100);
-
-    // Great-grandchild 400 syscalls - triggers recursive registration of entire chain
-    _ = try v_procs.get(400);
-
-    // All four should be registered
-    try std.testing.expectEqual(4, v_procs.lookup.count());
-    try std.testing.expect(v_procs.lookup.get(100) != null);
-    try std.testing.expect(v_procs.lookup.get(200) != null);
-    try std.testing.expect(v_procs.lookup.get(300) != null);
-    try std.testing.expect(v_procs.lookup.get(400) != null);
-
-    // Verify chain structure
-    const proc_400 = v_procs.lookup.get(400).?;
-    const proc_300 = v_procs.lookup.get(300).?;
-    const proc_200 = v_procs.lookup.get(200).?;
-    const proc_100 = v_procs.lookup.get(100).?;
-
-    try std.testing.expectEqual(proc_300, proc_400.parent.?);
-    try std.testing.expectEqual(proc_200, proc_300.parent.?);
-    try std.testing.expectEqual(proc_100, proc_200.parent.?);
-    try std.testing.expectEqual(null, proc_100.parent);
-}
-
-test "out-of-order with clone flags" {
-    const allocator = std.testing.allocator;
-    var v_procs = Self.init(allocator);
-    defer v_procs.deinit();
-    defer proc_info.testing.reset(allocator);
-
-    // Register root process 100
-    try v_procs.handleInitialProcess(100);
-
-    // Setup mock: 200 is child of 100 with CLONE_NEWPID
-    try proc_info.testing.setupParent(allocator, 200, 100);
-    try proc_info.testing.setupCloneFlags(allocator, 200, CloneFlags.from(linux.CLONE.NEWPID));
-    // 200 is in a new namespace (depth 2), PID 1 in its own namespace
-    const nspids_200 = [_]Proc.GuestPID{ 200, 1 };
-    try proc_info.testing.setupNsPids(allocator, 200, &nspids_200);
-
-    // Child 200 syscalls - should be in new namespace
-    const proc_200 = try v_procs.get(200);
-    const proc_100 = v_procs.lookup.get(100).?;
-
-    try std.testing.expect(proc_200.isNamespaceRoot());
-    try std.testing.expect(proc_100.namespace != proc_200.namespace);
-}
-
-test "out-of-order fails for process outside sandbox escaping to 1" {
-    const allocator = std.testing.allocator;
-    var v_procs = Self.init(allocator);
-    defer v_procs.deinit();
-    defer proc_info.testing.reset(allocator);
-
-    // Register root process 100
-    try v_procs.handleInitialProcess(100);
-
-    // Setup mock: 300 has parent 200, but 200's parent (999) is not in sandbox
-    try proc_info.testing.setupParent(allocator, 300, 200);
-    try proc_info.testing.setupParent(allocator, 200, 999);
-    // Note: 999 is not in our sandbox, its lineage escapes up to pid 1 or 0
-    try proc_info.testing.setupParent(allocator, 999, 1);
-    try proc_info.testing.setupParent(allocator, 1, 0);
-
-    // 300 syscalls - should fail because chain leads outside sandbox
-    try std.testing.expectError(error.ProcNotInSandbox, v_procs.get(300));
-}
-
-test "out-of-order fails for process outside sandbox escaping to nonexistant kernel pid" {
-    const allocator = std.testing.allocator;
-    var v_procs = Self.init(allocator);
-    defer v_procs.deinit();
-    defer proc_info.testing.reset(allocator);
-
-    // Register root process 100
-    try v_procs.handleInitialProcess(100);
-
-    // Setup mock: 300 has parent 200, but 200's parent (999) is not in sandbox
-    try proc_info.testing.setupParent(allocator, 300, 200);
-    try proc_info.testing.setupParent(allocator, 200, 999);
-    // say 999 has no parent in the kernel
-
-    // 300 syscalls - should fail because chain fails due to proc not in kernel
-    try std.testing.expectError(error.ProcNotInKernel, v_procs.get(300));
 }
 
 test "deep namespace hierarchy (10 levels)" {
@@ -722,7 +585,7 @@ test "deep namespace hierarchy (10 levels)" {
 
     // Create a chain: ns0 -> ns1 -> ns2 -> ... -> ns9
     // Each level has one process that is the root of a new namespace
-    var pids: [DEPTH]Proc.SupervisorPID = undefined;
+    var pids: [DEPTH]AbsPid = undefined;
     var procs: [DEPTH]*Proc = undefined;
 
     // Root process (depth 1)
@@ -736,12 +599,12 @@ test "deep namespace hierarchy (10 levels)" {
 
         // Build NSpid array: [pid_as_seen_from_ns0, ..., pid_as_seen_from_own_ns]
         // For depth i+1, we need i+1 entries
-        var nspid_buf: [DEPTH]Proc.GuestPID = undefined;
+        var nspid_buf: [DEPTH]NsPid = undefined;
         for (0..i + 1) |j| {
             // From ancestor namespace j's view, this proc has a certain PID
             // For simplicity: from ns_j, the PID is (1000 + i) - j
             // This simulates different PIDs in different namespaces
-            nspid_buf[j] = @intCast(pids[i] - @as(Proc.SupervisorPID, @intCast(j)));
+            nspid_buf[j] = @intCast(pids[i] - @as(AbsPid, @intCast(j)));
         }
         try proc_info.testing.setupNsPids(allocator, pids[i], nspid_buf[0 .. i + 1]);
 
@@ -794,7 +657,7 @@ test "wide tree with many processes per namespace" {
     const CHILDREN_PER_LEVEL = 20;
 
     // Root process
-    const root_pid: Proc.SupervisorPID = 1;
+    const root_pid: AbsPid = 1;
     try v_procs.handleInitialProcess(root_pid);
     const root = v_procs.lookup.get(root_pid).?;
 
@@ -803,7 +666,7 @@ test "wide tree with many processes per namespace" {
     // Level 1: 20 children of root (same namespace)
     var level1_procs: [CHILDREN_PER_LEVEL]*Proc = undefined;
     for (0..CHILDREN_PER_LEVEL) |i| {
-        const pid: Proc.SupervisorPID = @intCast(100 + i);
+        const pid: AbsPid = @intCast(100 + i);
         _ = try v_procs.registerChild(root, pid, CloneFlags.from(0));
         level1_procs[i] = v_procs.lookup.get(pid).?;
         total_procs += 1;
@@ -813,7 +676,7 @@ test "wide tree with many processes per namespace" {
     var level2_procs: [CHILDREN_PER_LEVEL][CHILDREN_PER_LEVEL]*Proc = undefined;
     for (0..CHILDREN_PER_LEVEL) |i| {
         for (0..CHILDREN_PER_LEVEL) |j| {
-            const pid: Proc.SupervisorPID = @intCast(1000 + i * 100 + j);
+            const pid: AbsPid = @intCast(1000 + i * 100 + j);
             _ = try v_procs.registerChild(level1_procs[i], pid, CloneFlags.from(0));
             level2_procs[i][j] = v_procs.lookup.get(pid).?;
             total_procs += 1;
@@ -861,28 +724,28 @@ test "mixed namespaces: some shared, some isolated" {
     const proc_c = v_procs.lookup.get(30).?;
 
     // ns1: A's children in new namespace
-    const a1_nspids = [_]Proc.GuestPID{ 11, 1 };
+    const a1_nspids = [_]NsPid{ 11, 1 };
     try proc_info.testing.setupNsPids(allocator, 11, &a1_nspids);
     _ = try v_procs.registerChild(proc_a, 11, CloneFlags.from(linux.CLONE.NEWPID));
     const proc_a1 = v_procs.lookup.get(11).?;
 
-    const a2_nspids = [_]Proc.GuestPID{ 12, 2 };
+    const a2_nspids = [_]NsPid{ 12, 2 };
     try proc_info.testing.setupNsPids(allocator, 12, &a2_nspids);
     _ = try v_procs.registerChild(proc_a1, 12, CloneFlags.from(0));
     const proc_a2 = v_procs.lookup.get(12).?;
 
     // ns2: B's children in new namespace
-    const b1_nspids = [_]Proc.GuestPID{ 21, 1 };
+    const b1_nspids = [_]NsPid{ 21, 1 };
     try proc_info.testing.setupNsPids(allocator, 21, &b1_nspids);
     _ = try v_procs.registerChild(proc_b, 21, CloneFlags.from(linux.CLONE.NEWPID));
     const proc_b1 = v_procs.lookup.get(21).?;
 
-    const b2_nspids = [_]Proc.GuestPID{ 22, 2 };
+    const b2_nspids = [_]NsPid{ 22, 2 };
     try proc_info.testing.setupNsPids(allocator, 22, &b2_nspids);
     _ = try v_procs.registerChild(proc_b1, 22, CloneFlags.from(0));
 
     // ns3: nested inside ns2
-    const b1a_nspids = [_]Proc.GuestPID{ 211, 3, 1 }; // seen as 211 from ns0, 3 from ns2, 1 from ns3
+    const b1a_nspids = [_]NsPid{ 211, 3, 1 }; // seen as 211 from ns0, 3 from ns2, 1 from ns3
     try proc_info.testing.setupNsPids(allocator, 211, &b1a_nspids);
     _ = try v_procs.registerChild(proc_b1, 211, CloneFlags.from(linux.CLONE.NEWPID));
     const proc_b1a = v_procs.lookup.get(211).?;
@@ -941,7 +804,7 @@ test "mixed namespaces: some shared, some isolated" {
     try std.testing.expect(v_procs.lookup.get(30) != null);
 }
 
-test "stress: verify GuestPID mapping correctness across namespaces" {
+test "stress: verify NsPid mapping correctness across namespaces" {
     const allocator = std.testing.allocator;
     var v_procs = Self.init(allocator);
     defer v_procs.deinit();
@@ -949,39 +812,39 @@ test "stress: verify GuestPID mapping correctness across namespaces" {
 
     // Create: root(100) -> child(200) in new namespace
     // NSpid for child: [200, 1] meaning:
-    //   - From root namespace: GuestPID = 200
-    //   - From child's own namespace: GuestPID = 1
+    //   - From root namespace: NsPid = 200
+    //   - From child's own namespace: NsPid = 1
 
     try v_procs.handleInitialProcess(100);
     const root = v_procs.lookup.get(100).?;
 
-    const child_nspids = [_]Proc.GuestPID{ 200, 1 };
+    const child_nspids = [_]NsPid{ 200, 1 };
     try proc_info.testing.setupNsPids(allocator, 200, &child_nspids);
     _ = try v_procs.registerChild(root, 200, CloneFlags.from(linux.CLONE.NEWPID));
     const child = v_procs.lookup.get(200).?;
 
-    // Verify GuestPID from each namespace's perspective
-    // From root namespace, child's GuestPID should be 200
-    const child_gpid_from_root = root.namespace.getGuestPID(child);
-    try std.testing.expectEqual(@as(?Proc.GuestPID, 200), child_gpid_from_root);
+    // Verify NsPid from each namespace's perspective
+    // From root namespace, child's NsPid should be 200
+    const child_gpid_from_root = root.namespace.getNsPid(child);
+    try std.testing.expectEqual(@as(?NsPid, 200), child_gpid_from_root);
 
-    // From child's namespace, child's GuestPID should be 1
-    const child_gpid_from_self = child.namespace.getGuestPID(child);
-    try std.testing.expectEqual(@as(?Proc.GuestPID, 1), child_gpid_from_self);
+    // From child's namespace, child's NsPid should be 1
+    const child_gpid_from_self = child.namespace.getNsPid(child);
+    try std.testing.expectEqual(@as(?NsPid, 1), child_gpid_from_self);
 
     // Root should not be visible from child's namespace
-    const root_gpid_from_child = child.namespace.getGuestPID(root);
-    try std.testing.expectEqual(@as(?Proc.GuestPID, null), root_gpid_from_child);
+    const root_gpid_from_child = child.namespace.getNsPid(root);
+    try std.testing.expectEqual(@as(?NsPid, null), root_gpid_from_child);
 
-    // Root's GuestPID from root namespace should be 100
-    const root_gpid_from_self = root.namespace.getGuestPID(root);
-    try std.testing.expectEqual(@as(?Proc.GuestPID, 100), root_gpid_from_self);
+    // Root's NsPid from root namespace should be 100
+    const root_gpid_from_self = root.namespace.getNsPid(root);
+    try std.testing.expectEqual(@as(?NsPid, 100), root_gpid_from_self);
 
     // Add grandchild: child(200) -> grandchild(300) in same namespace as child
     // NSpid for grandchild: [300, 2] meaning:
-    //   - From root namespace: GuestPID = 300
-    //   - From child's namespace: GuestPID = 2
-    const grandchild_nspids = [_]Proc.GuestPID{ 300, 2 };
+    //   - From root namespace: NsPid = 300
+    //   - From child's namespace: NsPid = 2
+    const grandchild_nspids = [_]NsPid{ 300, 2 };
     try proc_info.testing.setupNsPids(allocator, 300, &grandchild_nspids);
     _ = try v_procs.registerChild(child, 300, CloneFlags.from(0));
     const grandchild = v_procs.lookup.get(300).?;
@@ -989,19 +852,89 @@ test "stress: verify GuestPID mapping correctness across namespaces" {
     // Grandchild should be in same namespace as child
     try std.testing.expect(grandchild.namespace == child.namespace);
 
-    // Verify GuestPID of grandchild
+    // Verify NsPid of grandchild
     //  from root's perspective
-    const gc_gpid_from_root = root.namespace.getGuestPID(grandchild);
-    try std.testing.expectEqual(@as(?Proc.GuestPID, 300), gc_gpid_from_root);
+    const gc_gpid_from_root = root.namespace.getNsPid(grandchild);
+    try std.testing.expectEqual(@as(?NsPid, 300), gc_gpid_from_root);
 
     //  from child's perspective
-    const gc_gpid_from_child_ns = child.namespace.getGuestPID(grandchild);
-    try std.testing.expectEqual(@as(?Proc.GuestPID, 2), gc_gpid_from_child_ns);
+    const gc_gpid_from_child_ns = child.namespace.getNsPid(grandchild);
+    try std.testing.expectEqual(@as(?NsPid, 2), gc_gpid_from_child_ns);
 
-    // Lookup by GuestPID from child's namespace
+    // Lookup by NsPid from child's namespace
     const found_child = child.namespace.procs.get(1);
     try std.testing.expectEqual(child, found_child);
 
     const found_grandchild = child.namespace.procs.get(2);
     try std.testing.expectEqual(grandchild, found_grandchild);
+}
+
+test "ensureRegistered registers process and ancestors" {
+    const allocator = std.testing.allocator;
+    var v_procs = Self.init(allocator);
+    defer v_procs.deinit();
+    defer proc_info.testing.reset(allocator);
+
+    // Register initial process 100
+    try v_procs.handleInitialProcess(100);
+    try std.testing.expectEqual(1, v_procs.lookup.count());
+
+    // Build a status_map with chain: 300 -> 200 -> 100
+    var status_map = std.AutoHashMap(AbsPid, ProcStatus).init(allocator);
+    defer status_map.deinit();
+
+    try proc_info.testing.setupParent(allocator, 200, 100);
+    try proc_info.testing.setupParent(allocator, 300, 200);
+
+    const status_200 = try getStatus(200);
+    const status_300 = try getStatus(300);
+    try status_map.put(200, status_200);
+    try status_map.put(300, status_300);
+
+    // Register 300 should also register 200
+    try v_procs.ensureRegistered(&status_map, 300);
+
+    try std.testing.expectEqual(3, v_procs.lookup.count());
+    try std.testing.expect(v_procs.lookup.get(100) != null);
+    try std.testing.expect(v_procs.lookup.get(200) != null);
+    try std.testing.expect(v_procs.lookup.get(300) != null);
+
+    // Verify parental relationships
+    const proc_100 = v_procs.lookup.get(100).?;
+    const proc_200 = v_procs.lookup.get(200).?;
+    const proc_300 = v_procs.lookup.get(300).?;
+
+    try std.testing.expectEqual(proc_100, proc_200.parent.?);
+    try std.testing.expectEqual(proc_200, proc_300.parent.?);
+}
+
+test "ensureRegistered is idempotent for already registered process" {
+    const allocator = std.testing.allocator;
+    var v_procs = Self.init(allocator);
+    defer v_procs.deinit();
+    defer proc_info.testing.reset(allocator);
+
+    // Register initial process 100
+    try v_procs.handleInitialProcess(100);
+
+    var status_map = std.AutoHashMap(AbsPid, ProcStatus).init(allocator);
+    defer status_map.deinit();
+
+    // Calling ensureRegistered on already registered process is a no-op
+    try v_procs.ensureRegistered(&status_map, 100);
+    try std.testing.expectEqual(1, v_procs.lookup.count());
+}
+
+test "ensureRegistered fails for process not in status_map" {
+    const allocator = std.testing.allocator;
+    var v_procs = Self.init(allocator);
+    defer v_procs.deinit();
+
+    try v_procs.handleInitialProcess(100);
+
+    var status_map = std.AutoHashMap(AbsPid, ProcStatus).init(allocator);
+    defer status_map.deinit();
+    // status_map is empty, 200 not in it
+
+    try std.testing.expectError(error.ProcNotInKernel, v_procs.ensureRegistered(&status_map, 200));
 }

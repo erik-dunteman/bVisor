@@ -4,7 +4,7 @@ const posix = std.posix;
 const types = @import("../../types.zig");
 const Proc = @import("../proc/Proc.zig");
 
-const SupervisorPID = Proc.SupervisorPID;
+const AbsPid = Proc.AbsPid;
 
 /// Backing for a virtual file descriptor entry in the fd table.
 /// Tagged union representing different types of open files.
@@ -17,7 +17,7 @@ pub const OpenFile = union(enum) {
 
     pub const ProcFile = union(enum) {
         self: struct {
-            pid: SupervisorPID,
+            pid: AbsPid,
             offset: usize = 0,
         },
 

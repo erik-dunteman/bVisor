@@ -4,21 +4,21 @@ const Allocator = std.mem.Allocator;
 const Namespace = @import("Namespace.zig");
 const FdTable = @import("../fs/FdTable.zig");
 
-pub const SupervisorPID = linux.pid_t;
-pub const GuestPID = linux.pid_t; // a pid as visible by that guest process, requiring lookup via namespace
+pub const AbsPid = linux.pid_t;
+pub const NsPid = linux.pid_t; // a pid as visible by that guest process, requiring lookup via namespace
 
 const ProcSet = std.AutoHashMapUnmanaged(*Self, void);
 const ProcList = std.ArrayList(*Self);
 
 const Self = @This();
 
-pid: SupervisorPID,
+pid: AbsPid,
 namespace: *Namespace,
 fd_table: *FdTable,
 parent: ?*Self,
 children: ProcSet = .empty,
 
-pub fn init(allocator: Allocator, pid: SupervisorPID, namespace: ?*Namespace, fd_table: ?*FdTable, parent: ?*Self) !*Self {
+pub fn init(allocator: Allocator, pid: AbsPid, namespace: ?*Namespace, fd_table: ?*FdTable, parent: ?*Self) !*Self {
     // Create or use provided fd_table
     const fdt = fd_table orelse try FdTable.init(allocator);
     errdefer if (fd_table == null) fdt.unref();
@@ -99,7 +99,7 @@ pub fn getNamespaceRoot(self: *Self) *Self {
     return current;
 }
 
-pub fn initChild(self: *Self, allocator: Allocator, pid: SupervisorPID, namespace: ?*Namespace, fd_table: ?*FdTable) !*Self {
+pub fn initChild(self: *Self, allocator: Allocator, pid: AbsPid, namespace: ?*Namespace, fd_table: ?*FdTable) !*Self {
     const child = try Self.init(allocator, pid, namespace, fd_table, self);
     errdefer child.deinit(allocator);
 

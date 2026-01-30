@@ -3,16 +3,18 @@ const linux = std.os.linux;
 const posix = std.posix;
 const Supervisor = @import("../../../Supervisor.zig");
 const Proc = @import("../../proc/Proc.zig");
+const AbsPid = Proc.AbsPid;
+const NsPid = Proc.NsPid;
 const Procs = @import("../../proc/Procs.zig");
 const testing = std.testing;
 const makeNotif = @import("../../../seccomp/notif.zig").makeNotif;
-const replyErr = @import("../../../seccomp/notif.zig").replyErr;
 const replySuccess = @import("../../../seccomp/notif.zig").replySuccess;
+const replyErr = @import("../../../seccomp/notif.zig").replyErr;
 const isError = @import("../../../seccomp/notif.zig").isError;
 
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
-    const caller_pid: Proc.SupervisorPID = @intCast(notif.pid);
-    const target_pid: Proc.GuestPID = @intCast(@as(i64, @bitCast(notif.data.arg0)));
+    const caller_pid: AbsPid = @intCast(notif.pid);
+    const target_pid: NsPid = @intCast(@as(i64, @bitCast(notif.data.arg0)));
     const signal: u6 = @truncate(notif.data.arg1);
 
     // Non-positive PIDs (process groups) not supported
@@ -21,21 +23,26 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         return replyErr(notif.id, .INVAL);
     }
 
-    const caller = supervisor.guest_procs.get(caller_pid) catch
-        return replyErr(notif.id, .SRCH);
+    supervisor.guest_procs.syncNewProcs() catch |err| {
+        std.log.err("kill: syncNewProcs failed: {}", .{err});
+        return replyErr(notif.id, .NOSYS);
+    };
 
-    const target = caller.namespace.procs.get(target_pid) orelse
+    // Get references to the caller and target processes
+    const caller_proc = supervisor.guest_procs.get(caller_pid) catch
+        return replyErr(notif.id, .SRCH);
+    const target_proc = caller_proc.namespace.procs.get(target_pid) orelse
         return replyErr(notif.id, .SRCH);
 
     // Caller must be able to see target
-    // TODO: rethink, this lookup is all messed up and ignores GuestPIDs being an option
-    if (!caller.canSee(target)) {
+    // TODO: rethink, this lookup is all messed up and ignores NsPids being an option
+    if (!caller_proc.canSee(target_proc)) {
         return replyErr(notif.id, .SRCH);
     }
 
     // Execute real kill syscall
     const sig: posix.SIG = @enumFromInt(signal);
-    posix.kill(@intCast(target.pid), sig) catch |err| {
+    posix.kill(@intCast(target_proc.pid), sig) catch |err| {
         const errno: linux.E = switch (err) {
             error.PermissionDenied => .PERM,
             error.ProcessNotFound => .SRCH,
