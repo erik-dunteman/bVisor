@@ -80,8 +80,34 @@ pub fn deinit(self: *Self) void {
 }
 
 /// Get the process of this pid from self.lookup
+///
+/// This is a hotpath for most syscalls, so we try to avoid syncing with the kernel unless necessary.
+/// Syncs happen only if the initial lookup fails.
 pub fn get(self: *Self, pid: AbsPid) !*Proc {
+    // Initial lookup
     if (self.lookup.get(pid)) |proc| return proc;
+
+    // Initial lookup failed, try lazy register
+    try self.syncNewProcs();
+    if (self.lookup.get(pid)) |proc| return proc;
+
+    // Still not found, give up
+    return error.ProcNotRegistered;
+}
+
+/// Get the process from an NsPid via a reference proc's namespace
+///
+/// This is a hotpath for any NsPid-targeting syscalls like kill and waitpid,
+/// So syncs with kernel only happen if initial lookup fails.
+pub fn getNamespaced(self: *Self, ref_proc: *Proc, nspid: NsPid) !*Proc {
+    // Initial lookup
+    if (ref_proc.namespace.procs.get(nspid)) |proc| return proc;
+
+    // Initial lookup failed, try lazy register
+    try self.syncNewProcs();
+    if (ref_proc.namespace.procs.get(nspid)) |proc| return proc;
+
+    // Still not found, give up
     return error.ProcNotRegistered;
 }
 

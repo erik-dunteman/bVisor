@@ -19,14 +19,8 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         return replyContinue(notif.id);
     }
 
-    // Sync and look up calling process
-    supervisor.guest_procs.syncNewProcs() catch |err| {
-        logger.log("close: syncNewProcs failed: {}", .{err});
-        return replyErr(notif.id, .NOSYS);
-    };
-
-    const proc = supervisor.guest_procs.get(pid) catch {
-        logger.log("close: process not found for pid={d}", .{pid});
+    const proc = supervisor.guest_procs.get(pid) catch |err| {
+        logger.log("close: process not found for pid={d}: {}", .{ pid, err });
         return replyErr(notif.id, .SRCH);
     };
 

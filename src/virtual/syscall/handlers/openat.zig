@@ -22,14 +22,8 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
 
     const pid: Proc.AbsPid = @intCast(notif.pid);
 
-    supervisor.guest_procs.syncNewProcs() catch |err| {
-        logger.log("openat: syncNewProcs failed: {}", .{err});
-        return replyErr(notif.id, .NOSYS);
-    };
-
-    // Ensure calling process exists
-    const proc = supervisor.guest_procs.get(pid) catch {
-        logger.log("openat: process lookup failed for pid: {d}", .{pid});
+    const proc = supervisor.guest_procs.get(pid) catch |err| {
+        logger.log("openat: process not found for pid={d}: {}", .{ pid, err });
         return replyErr(notif.id, .SRCH);
     };
 
@@ -65,6 +59,15 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
             const linux_flags: linux.O = @bitCast(@as(u32, @truncate(notif.data.arg2)));
             const flags = linuxToPosixFlags(linux_flags);
             const mode: posix.mode_t = @truncate(notif.data.arg3);
+
+            // Special case: if we're in the /proc filepath
+            // We need to sync guest_procs with the kernel to ensure all current PIDs are registered
+            if (backend == .proc) {
+                supervisor.guest_procs.syncNewProcs() catch |err| {
+                    logger.log("openat: syncNewProcs failed: {}", .{err});
+                    return replyErr(notif.id, .NOSYS);
+                };
+            }
 
             // Open the file via the appropriate backend
             const file: File = switch (backend) {

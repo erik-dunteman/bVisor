@@ -31,15 +31,8 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         return replyContinue(notif.id);
     }
 
-    // From here, fd is a virtualFD returned by openat
-    // Sync and look up calling process
-    supervisor.guest_procs.syncNewProcs() catch |err| {
-        logger.log("writev: syncNewProcs failed: {}", .{err});
-        return replyErr(notif.id, .NOSYS);
-    };
-
-    const proc = supervisor.guest_procs.get(pid) catch {
-        logger.log("writev: process not found for pid={d}", .{pid});
+    const proc = supervisor.guest_procs.get(pid) catch |err| {
+        logger.log("writev: process not found for pid={d}: {}", .{ pid, err });
         return replyErr(notif.id, .SRCH);
     };
 

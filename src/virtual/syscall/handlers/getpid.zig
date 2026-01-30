@@ -15,21 +15,14 @@ const isError = @import("../../../seccomp/notif.zig").isError;
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
     const caller_pid: AbsPid = @intCast(notif.pid);
 
-    // Sync supervisor's procs with the kernel
-    supervisor.guest_procs.syncNewProcs() catch |err| {
-        std.log.err("getpid: syncNewProcs failed: {}", .{err});
-        return replyErr(notif.id, .NOSYS);
+    const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
+        std.log.err("getpid: process not found for pid={d}: {}", .{ caller_pid, err });
+        return replyErr(notif.id, .SRCH);
     };
 
-    const caller_proc = supervisor.guest_procs.get(caller_pid) catch |err| {
-        // getpid() never fails in the kernel - if we can't find the process,
-        // it's a supervisor invariant violation
-        std.debug.panic("getpid: supervisor invariant violated - supervisor pid {d} not in guest_procs: {}", .{ caller_pid, err });
-    };
+    const ns_pid = caller.namespace.getNsPid(caller) orelse std.debug.panic("getpid: supervisor invariant violated - proc's namespace doesn't contain itself", .{});
 
-    const guest_pid = caller_proc.namespace.getNsPid(caller_proc) orelse std.debug.panic("getpid: supervisor invariant violated - proc's namespace doesn't contain itself", .{});
-
-    return replySuccess(notif.id, @intCast(guest_pid));
+    return replySuccess(notif.id, @intCast(ns_pid));
 }
 
 test "getpid returns supervisor pid" {

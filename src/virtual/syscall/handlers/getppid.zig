@@ -15,26 +15,22 @@ const isError = @import("../../../seccomp/notif.zig").isError;
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
     const caller_pid: AbsPid = @intCast(notif.pid);
 
-    supervisor.guest_procs.syncNewProcs() catch |err| {
-        std.log.err("getppid: syncNewProcs failed: {}", .{err});
-        return replyErr(notif.id, .NOSYS);
-    };
-
-    const caller_proc = supervisor.guest_procs.get(caller_pid) catch |err| {
-        // getppid() never fails in the kernel - if we can't find the process,
-        // it's a supervisor invariant violation
-        std.debug.panic("getppid: supervisor invariant violated - kernel pid {d} not in guest_procs: {}", .{ caller_pid, err });
+    const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
+        std.log.err("getppid: process not found for pid={d}: {}", .{ caller_pid, err });
+        return replyErr(notif.id, .SRCH);
     };
 
     // Return parent's kernel PID, or 0 if:
     // - No parent (sandbox root)
     // - Parent not visible (e.g., in CLONE_NEWPID case where parent is in different namespace)
-    const ppid: AbsPid = if (caller_proc.parent) |p|
-        if (caller_proc.canSee(p)) p.pid else 0
-    else
-        0;
+    if (caller.parent == null) return replySuccess(notif.id, 0);
+    const parent = caller.parent.?;
+    if (!caller.canSee(parent)) return replySuccess(notif.id, 0);
 
-    return replySuccess(notif.id, @intCast(ppid));
+    // Caller can see parent, but we need to remap to nspid
+    const ns_ppid = caller.namespace.getNsPid(parent) orelse std.debug.panic("getppid: supervisor invariant violated - proc's namespace doesn't contain itself", .{});
+
+    return replySuccess(notif.id, @intCast(ns_ppid));
 }
 
 test "getppid for init process returns 0" {

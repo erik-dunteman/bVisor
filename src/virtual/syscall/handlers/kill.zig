@@ -23,26 +23,19 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         return replyErr(notif.id, .INVAL);
     }
 
-    supervisor.guest_procs.syncNewProcs() catch |err| {
-        std.log.err("kill: syncNewProcs failed: {}", .{err});
-        return replyErr(notif.id, .NOSYS);
+    const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
+        std.log.err("kill: process not found for pid={d}: {}", .{ caller_pid, err });
+        return replyErr(notif.id, .SRCH);
     };
 
-    // Get references to the caller and target processes
-    const caller_proc = supervisor.guest_procs.get(caller_pid) catch
+    const target = supervisor.guest_procs.getNamespaced(caller, target_pid) catch |err| {
+        std.log.err("kill: target process not found for pid={d}: {}", .{ target_pid, err });
         return replyErr(notif.id, .SRCH);
-    const target_proc = caller_proc.namespace.procs.get(target_pid) orelse
-        return replyErr(notif.id, .SRCH);
-
-    // Caller must be able to see target
-    // TODO: rethink, this lookup is all messed up and ignores NsPids being an option
-    if (!caller_proc.canSee(target_proc)) {
-        return replyErr(notif.id, .SRCH);
-    }
+    };
 
     // Execute real kill syscall
     const sig: posix.SIG = @enumFromInt(signal);
-    posix.kill(@intCast(target_proc.pid), sig) catch |err| {
+    posix.kill(@intCast(target.pid), sig) catch |err| {
         const errno: linux.E = switch (err) {
             error.PermissionDenied => .PERM,
             error.ProcessNotFound => .SRCH,

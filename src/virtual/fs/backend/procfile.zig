@@ -66,11 +66,14 @@ pub const ProcFile = struct {
                 self.content_len = formatStatus(&self.content, caller);
             },
             .pid => |guest_pid| {
+                // Note: this depends on syncNewProcs being called proactively, else risk a not-registered PID.
+                // This syncNewProcs is called one level up, in openat.
                 const target_proc = caller.namespace.procs.get(guest_pid) orelse return error.FileNotFound;
                 _ = target_proc;
                 self.content_len = formatPid(&self.content, guest_pid);
             },
             .pid_status => |guest_pid| {
+                // Same case as above re: syncNewProcs
                 const target_proc = caller.namespace.procs.get(guest_pid) orelse return error.FileNotFound;
                 self.content_len = formatStatus(&self.content, target_proc);
             },
