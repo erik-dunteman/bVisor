@@ -33,7 +33,7 @@ pub inline fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.
         .getpid => getpid.handle(notif, supervisor),
         .getppid => getppid.handle(notif, supervisor),
         .gettid => gettid.handle(notif, supervisor),
-        .kill, .tkill => kill.handle(notif, supervisor),
+        .kill, .tkill => kill.handle(notif, supervisor), // TODO: handle tkill separately
         .exit_group => exit_group.handle(notif, supervisor),
 
         // Passthrough - create child process (kernel only, we lazily discover child later)
