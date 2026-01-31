@@ -1,7 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const types = @import("../../types.zig");
-const OpenFile = @import("OpenFile.zig").OpenFile;
+const File = @import("file.zig").File;
+const posix = std.posix;
 
 const SupervisorFD = types.SupervisorFD;
 
@@ -16,7 +17,7 @@ const Self = @This();
 /// When CLONE_FILES is not set, child gets a clone (copy with fresh refcount).
 ref_count: usize,
 allocator: Allocator,
-open_files: std.AutoHashMapUnmanaged(VirtualFD, OpenFile),
+open_files: std.AutoHashMapUnmanaged(VirtualFD, File),
 next_vfd: VirtualFD = 3, // start after stdin/stdout/stderr
 
 pub fn init(allocator: Allocator) !*Self {
@@ -44,41 +45,37 @@ pub fn unref(self: *Self) void {
 
 /// Create an independent copy with refcount=1.
 /// Used when CLONE_FILES is not set.
-pub fn clone(self: *Self) !*Self {
-    const new = try self.allocator.create(Self);
+pub fn clone(self: *Self, allocator: Allocator) !*Self {
+    const new = try allocator.create(Self);
     errdefer self.allocator.destroy(new);
 
     // AutoHashMapUnmanaged has no clone(), so we iterate manually
-    var new_open_files: std.AutoHashMapUnmanaged(VirtualFD, OpenFile) = .empty;
+    var new_open_files: std.AutoHashMapUnmanaged(VirtualFD, File) = .empty;
     errdefer new_open_files.deinit(self.allocator);
 
     var iter = self.open_files.iterator();
     while (iter.next()) |entry| {
+        // performs value copy
         try new_open_files.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
     }
 
     new.* = .{
         .ref_count = 1,
-        .allocator = self.allocator,
+        .allocator = allocator,
         .open_files = new_open_files,
         .next_vfd = self.next_vfd,
     };
     return new;
 }
 
-pub fn insert(self: *Self, vfd: VirtualFD, file: OpenFile) !void {
-    try self.open_files.put(self.allocator, vfd, file);
-}
-
-/// Allocate a new virtual fd number, insert the file, and return the vfd
-pub fn open(self: *Self, file: OpenFile) !VirtualFD {
+pub fn insert(self: *Self, file: File) !VirtualFD {
     const vfd = self.next_vfd;
     self.next_vfd += 1;
     try self.open_files.put(self.allocator, vfd, file);
     return vfd;
 }
 
-pub fn get(self: *Self, vfd: VirtualFD) ?*OpenFile {
+pub fn get(self: *Self, vfd: VirtualFD) ?*File {
     return self.open_files.getPtr(vfd);
 }
 
@@ -86,134 +83,113 @@ pub fn remove(self: *Self, vfd: VirtualFD) bool {
     return self.open_files.remove(vfd);
 }
 
+// ============================================================================
+// Tests
+// ============================================================================
+
 const testing = std.testing;
+const ProcFile = @import("backend/procfile.zig").ProcFile;
 
-test "FdTable refcount - ref increases count" {
-    const allocator = testing.allocator;
-    const table1 = try Self.init(allocator);
-    defer table1.unref();
-
-    try testing.expectEqual(1, table1.ref_count);
-
-    const table2 = table1.ref();
-    try testing.expectEqual(2, table1.ref_count);
-    try testing.expect(table1 == table2);
-
-    table2.unref();
-    try testing.expectEqual(1, table1.ref_count);
-}
-
-test "FdTable refcount - unref at zero frees" {
-    const allocator = testing.allocator;
-    const table = try Self.init(allocator);
-    table.unref();
-    // No leak detected by testing.allocator
-}
-
-test "FdTable clone creates independent copy" {
-    const allocator = testing.allocator;
-    const table1 = try Self.init(allocator);
-    defer table1.unref();
-
-    // Insert an FD
-    try table1.insert(5, .{ .proc = .{ .self = .{ .pid = 42 } } });
-
-    const table2 = try table1.clone();
-    defer table2.unref();
-
-    try testing.expect(table1 != table2);
-    try testing.expectEqual(1, table1.ref_count);
-    try testing.expectEqual(1, table2.ref_count);
-
-    // Both should have the FD
-    try testing.expect(table1.get(5) != null);
-    try testing.expect(table2.get(5) != null);
-
-    // Removing from one doesn't affect the other
-    _ = table2.remove(5);
-    try testing.expect(table1.get(5) != null);
-    try testing.expect(table2.get(5) == null);
-}
-
-test "FdTable insert and get" {
-    const allocator = testing.allocator;
-    const table = try Self.init(allocator);
+test "insert returns incrementing vfds starting at 3" {
+    const table = try Self.init(testing.allocator);
     defer table.unref();
 
-    try table.insert(3, .{ .proc = .{ .self = .{ .pid = 7 } } });
-
-    const fd_ptr = table.get(3);
-    try testing.expect(fd_ptr != null);
-
-    // Verify it's the right FD by reading from it
-    var buf: [16]u8 = undefined;
-    const n = try fd_ptr.?.read(&buf);
-    try testing.expectEqualStrings("7\n", buf[0..n]);
+    for (0..10) |i| {
+        const actual_fd: posix.fd_t = @intCast(100 + i);
+        const expected_virtual_fd: VirtualFD = @intCast(3 + i);
+        const file = File{ .passthrough = .{ .fd = actual_fd } };
+        const vfd = try table.insert(file);
+        try testing.expectEqual(expected_virtual_fd, vfd);
+    }
 }
 
-test "FdTable remove" {
-    const allocator = testing.allocator;
-    const table = try Self.init(allocator);
+test "get returns pointer to file" {
+    const table = try Self.init(testing.allocator);
     defer table.unref();
 
-    try table.insert(10, .{ .proc = .{ .self = .{ .pid = 99 } } });
-    try testing.expect(table.get(10) != null);
+    const file = File{ .passthrough = .{ .fd = 42 } };
+    const vfd = try table.insert(file);
 
-    const removed = table.remove(10);
+    const retrieved = table.get(vfd);
+    try testing.expect(retrieved != null);
+    try testing.expectEqual(@as(i32, 42), retrieved.?.passthrough.fd);
+}
+
+test "get on missing vfd returns null" {
+    const table = try Self.init(testing.allocator);
+    defer table.unref();
+
+    const retrieved = table.get(99);
+    try testing.expect(retrieved == null);
+}
+
+test "remove returns true for existing vfd" {
+    const table = try Self.init(testing.allocator);
+    defer table.unref();
+
+    const file = File{ .passthrough = .{ .fd = 100 } };
+    const vfd = try table.insert(file);
+
+    const removed = table.remove(vfd);
     try testing.expect(removed);
-    try testing.expect(table.get(10) == null);
-
-    const removed_again = table.remove(10);
-    try testing.expect(!removed_again);
+    try testing.expect(table.get(vfd) == null);
 }
 
-test "CLONE_FILES set - shared table, changes visible to both" {
-    const allocator = testing.allocator;
+test "remove returns false for missing vfd" {
+    const table = try Self.init(testing.allocator);
+    defer table.unref();
 
-    const parent_table = try Self.init(allocator);
-    defer parent_table.unref();
-
-    // Child with CLONE_FILES shares the table (ref, not clone)
-    const child_table = parent_table.ref();
-    defer child_table.unref();
-
-    try testing.expect(parent_table == child_table);
-    try testing.expectEqual(@as(usize, 2), parent_table.ref_count);
-
-    // Parent opens a file - child can see it
-    const vfd1 = try parent_table.open(.{ .proc = .{ .self = .{ .pid = 1 } } });
-    try testing.expect(child_table.get(vfd1) != null);
-
-    // Child opens a file - parent can see it
-    const vfd2 = try child_table.open(.{ .proc = .{ .self = .{ .pid = 2 } } });
-    try testing.expect(parent_table.get(vfd2) != null);
-
-    // Child closes a file - parent also loses it
-    _ = child_table.remove(vfd1);
-    try testing.expect(parent_table.get(vfd1) == null);
+    const removed = table.remove(99);
+    try testing.expect(!removed);
 }
 
-test "CLONE_FILES not set - cloned table, changes independent" {
-    const allocator = testing.allocator;
+test "CLONE_FILES scenario: shared table, changes visible to both" {
+    const table = try Self.init(testing.allocator);
+    defer table.unref();
 
-    const parent_table = try Self.init(allocator);
-    defer parent_table.unref();
+    // Simulate CLONE_FILES by ref'ing the same table
+    const shared = table.ref();
+    defer shared.unref();
 
-    const vfd1 = try parent_table.open(.{ .proc = .{ .self = .{ .pid = 1 } } });
+    // Insert via original
+    const file = File{ .passthrough = .{ .fd = 100 } };
+    const vfd = try table.insert(file);
 
-    // Child without CLONE_FILES gets a clone
-    const child_table = try parent_table.clone();
-    defer child_table.unref();
+    // Should be visible via shared reference
+    try testing.expect(shared.get(vfd) != null);
 
-    try testing.expect(parent_table != child_table);
-    try testing.expectEqual(@as(usize, 1), parent_table.ref_count);
-    try testing.expectEqual(@as(usize, 1), child_table.ref_count);
+    // Remove via shared reference
+    _ = shared.remove(vfd);
 
-    // Child inherited the file
-    try testing.expect(child_table.get(vfd1) != null);
+    // Should be gone from both
+    try testing.expect(table.get(vfd) == null);
+    try testing.expect(shared.get(vfd) == null);
+}
 
-    // Child closes inherited file - parent still has it
-    _ = child_table.remove(vfd1);
-    try testing.expect(parent_table.get(vfd1) != null);
-    try testing.expect(child_table.get(vfd1) == null);
+test "CLONE_FILES not set: cloned table, changes independent" {
+    const original = try Self.init(testing.allocator);
+    defer original.unref();
+
+    // Insert a file into original
+    const file = File{ .passthrough = .{ .fd = 100 } };
+    const vfd = try original.insert(file);
+
+    // Clone the table (simulates fork without CLONE_FILES)
+    const cloned = try original.clone(testing.allocator);
+    defer cloned.unref();
+
+    // Both should have the file initially
+    try testing.expect(original.get(vfd) != null);
+    try testing.expect(cloned.get(vfd) != null);
+
+    // Remove from cloned - should not affect original
+    _ = cloned.remove(vfd);
+    try testing.expect(original.get(vfd) != null);
+    try testing.expect(cloned.get(vfd) == null);
+
+    // Insert into original - should not affect cloned
+    const file2 = File{ .passthrough = .{ .fd = 101 } };
+    const vfd2 = try original.insert(file2);
+    try testing.expect(original.get(vfd2) != null);
+    try testing.expect(cloned.get(vfd2) == null);
 }

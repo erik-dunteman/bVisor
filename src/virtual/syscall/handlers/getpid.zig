@@ -15,35 +15,28 @@ const isError = @import("../../../seccomp/notif.zig").isError;
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
     const caller_pid: AbsPid = @intCast(notif.pid);
 
-    // Sync supervisor's procs with the kernel
-    supervisor.guest_procs.syncNewProcs() catch |err| {
-        std.log.err("getpid: syncNewProcs failed: {}", .{err});
-        return replyErr(notif.id, .NOSYS);
+    const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
+        std.log.err("getpid: process not found for pid={d}: {}", .{ caller_pid, err });
+        return replyErr(notif.id, .SRCH);
     };
 
-    const caller_proc = supervisor.guest_procs.get(caller_pid) catch |err| {
-        // getpid() never fails in the kernel - if we can't find the process,
-        // it's a supervisor invariant violation
-        std.debug.panic("getpid: supervisor invariant violated - supervisor pid {d} not in guest_procs: {}", .{ caller_pid, err });
-    };
+    const ns_pid = caller.namespace.getNsPid(caller) orelse std.debug.panic("getpid: supervisor invariant violated - proc's namespace doesn't contain itself", .{});
 
-    const guest_pid = caller_proc.namespace.getNsPid(caller_proc) orelse std.debug.panic("getpid: supervisor invariant violated - proc's namespace doesn't contain itself", .{});
-
-    return replySuccess(notif.id, @intCast(guest_pid));
+    return replySuccess(notif.id, @intCast(ns_pid));
 }
 
-test "getpid returns supervisor pid" {
+test "getpid returns init process NsPid" {
     const allocator = testing.allocator;
-    const supervisor_pid: AbsPid = 12345;
-    var supervisor = try Supervisor.init(allocator, testing.io, -1, supervisor_pid);
+    const init_pid: AbsPid = 12345;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
     defer supervisor.deinit();
 
-    const notif = makeNotif(.getpid, .{ .pid = supervisor_pid });
+    const notif = makeNotif(.getpid, .{ .pid = init_pid });
     const resp = handle(notif, &supervisor);
-    try testing.expectEqual(supervisor_pid, resp.val);
+    try testing.expectEqual(init_pid, resp.val);
 }
 
-test "getpid for guest process returns guest pid" {
+test "getpid for child process returns its NsPid" {
     const allocator = testing.allocator;
     // Add an initial guest
     const init_guest_pid: AbsPid = 100;
@@ -70,18 +63,18 @@ test "getpid from immediate child in new namespace returns namespace-local PID" 
     defer proc_info.testing.reset(allocator);
 
     // Child in new namespace (depth 2, PID 1 in its own namespace)
-    const guest_pid: AbsPid = 9999;
+    const child_pid: AbsPid = 9999;
     const nspids = [_]NsPid{ 9999, 1 };
-    try proc_info.testing.setupNsPids(allocator, guest_pid, &nspids);
+    try proc_info.testing.setupNsPids(allocator, child_pid, &nspids);
 
     const parent = supervisor.guest_procs.lookup.get(init_pid).?;
-    _ = try supervisor.guest_procs.registerChild(parent, guest_pid, Procs.CloneFlags.from(linux.CLONE.NEWPID));
+    _ = try supervisor.guest_procs.registerChild(parent, child_pid, Procs.CloneFlags.from(linux.CLONE.NEWPID));
 
     // Child calls getpid
-    const notif = makeNotif(.getpid, .{ .pid = guest_pid });
+    const notif = makeNotif(.getpid, .{ .pid = child_pid });
     const resp = handle(notif, &supervisor);
     try testing.expect(!isError(resp));
     try testing.expectEqual(1, resp.val);
-    // Child's NsPid should (almost certainly) not match the AbsPid for that guest process (e.g., 1)
-    try testing.expect(guest_pid != resp.val);
+    // Child's NsPid should (almost certainly) not match the AbsPid for that child process (e.g., 1)
+    try testing.expect(child_pid != resp.val);
 }

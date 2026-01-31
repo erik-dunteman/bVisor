@@ -155,3 +155,4 @@ test {
 - Use init(...) as constructor, and a deferrable deinit(...) if destructor is needed.
 - Use std.linux specific APIs rather than calling syscalls directly. When in doubt, grep std.linux. The std lib can be found in the same directory as the Zig binary, plus `./lib/std/os/linux.zig`.
 - Batch operations when possible - avoid syscall-per-byte patterns (e.g., use `readSlice` to read known-length buffers in one call).
+- The std library is full of useful APIs. Before writing a new function, check if it already exists in std.

@@ -16,7 +16,7 @@ pub var mock_ppid_map: std.AutoHashMapUnmanaged(AbsPid, AbsPid) = .empty;
 /// Mock clone flags map: child_pid -> CloneFlags
 pub var mock_clone_flags: std.AutoHashMapUnmanaged(AbsPid, CloneFlags) = .empty;
 
-/// Mock NSpid map: supervisor_pid -> array of guest PIDs (outermost to innermost)
+/// Mock NSpid map: AbsPid -> array of NsPids (outermost to innermost)
 pub var mock_nspids: std.AutoHashMapUnmanaged(AbsPid, []const NsPid) = .empty;
 
 /// Return mock clone flags for a child
@@ -34,7 +34,7 @@ pub fn readNsPids(pid: AbsPid, buf: []NsPid) ![]NsPid {
         @memcpy(buf[0..nspids.len], nspids);
         return buf[0..nspids.len];
     }
-    // Default: single namespace, guest PID = supervisor PID
+    // Default: single namespace, NsPid = AbsPid
     if (buf.len < 1) return error.BufferTooSmall;
     buf[0] = pid;
     return buf[0..1];

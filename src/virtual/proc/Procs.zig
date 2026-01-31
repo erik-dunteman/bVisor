@@ -80,8 +80,34 @@ pub fn deinit(self: *Self) void {
 }
 
 /// Get the process of this pid from self.lookup
+///
+/// This is a hotpath for most syscalls, so we try to avoid syncing with the kernel unless necessary.
+/// Syncs happen only if the initial lookup fails.
 pub fn get(self: *Self, pid: AbsPid) !*Proc {
+    // Initial lookup
     if (self.lookup.get(pid)) |proc| return proc;
+
+    // Initial lookup failed, try lazy register
+    try self.syncNewProcs();
+    if (self.lookup.get(pid)) |proc| return proc;
+
+    // Still not found, give up
+    return error.ProcNotRegistered;
+}
+
+/// Get the process from an NsPid via a reference proc's namespace
+///
+/// This is a hotpath for any NsPid-targeting syscalls like kill and waitpid,
+/// So syncs with kernel only happen if initial lookup fails.
+pub fn getNamespaced(self: *Self, ref_proc: *Proc, nspid: NsPid) !*Proc {
+    // Initial lookup
+    if (ref_proc.namespace.procs.get(nspid)) |proc| return proc;
+
+    // Initial lookup failed, try lazy register
+    try self.syncNewProcs();
+    if (ref_proc.namespace.procs.get(nspid)) |proc| return proc;
+
+    // Still not found, give up
     return error.ProcNotRegistered;
 }
 
@@ -173,7 +199,7 @@ pub fn registerChild(
     const fd_table: *FdTable = if (clone_flags.shareFiles())
         parent.fd_table.ref()
     else
-        try parent.fd_table.clone();
+        try parent.fd_table.clone(self.allocator);
     errdefer fd_table.unref();
 
     const child = try parent.initChild(self.allocator, child_pid, namespace, fd_table);
@@ -825,20 +851,20 @@ test "stress: verify NsPid mapping correctness across namespaces" {
 
     // Verify NsPid from each namespace's perspective
     // From root namespace, child's NsPid should be 200
-    const child_gpid_from_root = root.namespace.getNsPid(child);
-    try std.testing.expectEqual(@as(?NsPid, 200), child_gpid_from_root);
+    const child_nspid_from_root = root.namespace.getNsPid(child);
+    try std.testing.expectEqual(@as(?NsPid, 200), child_nspid_from_root);
 
     // From child's namespace, child's NsPid should be 1
-    const child_gpid_from_self = child.namespace.getNsPid(child);
-    try std.testing.expectEqual(@as(?NsPid, 1), child_gpid_from_self);
+    const child_nspid_from_self = child.namespace.getNsPid(child);
+    try std.testing.expectEqual(@as(?NsPid, 1), child_nspid_from_self);
 
     // Root should not be visible from child's namespace
-    const root_gpid_from_child = child.namespace.getNsPid(root);
-    try std.testing.expectEqual(@as(?NsPid, null), root_gpid_from_child);
+    const root_nspid_from_child = child.namespace.getNsPid(root);
+    try std.testing.expectEqual(@as(?NsPid, null), root_nspid_from_child);
 
     // Root's NsPid from root namespace should be 100
-    const root_gpid_from_self = root.namespace.getNsPid(root);
-    try std.testing.expectEqual(@as(?NsPid, 100), root_gpid_from_self);
+    const root_nspid_from_self = root.namespace.getNsPid(root);
+    try std.testing.expectEqual(@as(?NsPid, 100), root_nspid_from_self);
 
     // Add grandchild: child(200) -> grandchild(300) in same namespace as child
     // NSpid for grandchild: [300, 2] meaning:
@@ -854,12 +880,12 @@ test "stress: verify NsPid mapping correctness across namespaces" {
 
     // Verify NsPid of grandchild
     //  from root's perspective
-    const gc_gpid_from_root = root.namespace.getNsPid(grandchild);
-    try std.testing.expectEqual(@as(?NsPid, 300), gc_gpid_from_root);
+    const gc_nspid_from_root = root.namespace.getNsPid(grandchild);
+    try std.testing.expectEqual(@as(?NsPid, 300), gc_nspid_from_root);
 
     //  from child's perspective
-    const gc_gpid_from_child_ns = child.namespace.getNsPid(grandchild);
-    try std.testing.expectEqual(@as(?NsPid, 2), gc_gpid_from_child_ns);
+    const gc_nspid_from_child_ns = child.namespace.getNsPid(grandchild);
+    try std.testing.expectEqual(@as(?NsPid, 2), gc_nspid_from_child_ns);
 
     // Lookup by NsPid from child's namespace
     const found_child = child.namespace.procs.get(1);

@@ -5,7 +5,7 @@ const Namespace = @import("Namespace.zig");
 const FdTable = @import("../fs/FdTable.zig");
 
 pub const AbsPid = linux.pid_t;
-pub const NsPid = linux.pid_t; // a pid as visible by that guest process, requiring lookup via namespace
+pub const NsPid = linux.pid_t; // a pid as visible within a namespace, requiring lookup via namespace
 
 const ProcSet = std.AutoHashMapUnmanaged(*Self, void);
 const ProcList = std.ArrayList(*Self);

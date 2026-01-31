@@ -2,8 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const linux = std.os.linux;
 
-pub const SupervisorFD = i32;
-
 pub fn LinuxResult(comptime T: type) type {
     return union(enum) {
         Ok: T,

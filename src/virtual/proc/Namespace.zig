@@ -44,12 +44,12 @@ pub fn unref(self: *Self) void {
 }
 
 /// Register a proc in this namespace and all ancestor namespaces.
-/// Reads NSpid from /proc/[pid]/status to get the guest PID for each namespace level.
+/// Reads NSpid from /proc/[pid]/status to get the NsPid for each namespace level.
 /// NSpid format: "NSpid: 15234  892  7  1" (outermost to innermost)
-pub fn registerProc(self: *Self, allocator: Allocator, proc: *Proc, supervisor_pid: AbsPid) !void {
+pub fn registerProc(self: *Self, allocator: Allocator, proc: *Proc, abs_pid: AbsPid) !void {
     // Read NSpid chain from kernel. Gives us PIDs from outermost to innermost namespace
     var nspid_buf: [128]NsPid = undefined;
-    const nspids = try proc_info.readNsPids(supervisor_pid, &nspid_buf);
+    const nspids = try proc_info.readNsPids(abs_pid, &nspid_buf);
 
     // Count namespace depth (self + ancestors)
     var ns_depth: usize = 1;
@@ -83,15 +83,15 @@ pub fn registerProc(self: *Self, allocator: Allocator, proc: *Proc, supervisor_p
 /// Unregister a proc from this namespace and all ancestor namespaces.
 pub fn unregisterProc(self: *Self, proc: *Proc) void {
     // Find and remove from own namespace
-    if (self.getNsPid(proc)) |guest_pid| {
-        _ = self.procs.remove(guest_pid);
+    if (self.getNsPid(proc)) |ns_pid| {
+        _ = self.procs.remove(ns_pid);
     }
 
     // Remove from all ancestor namespaces
     var ancestor = self.parent;
     while (ancestor) |ns| {
-        if (ns.getNsPid(proc)) |guest_pid| {
-            _ = ns.procs.remove(guest_pid);
+        if (ns.getNsPid(proc)) |ns_pid| {
+            _ = ns.procs.remove(ns_pid);
         }
         ancestor = ns.parent;
     }
@@ -102,7 +102,7 @@ pub fn contains(self: *Self, proc: *Proc) bool {
     return self.getNsPid(proc) != null;
 }
 
-/// Reverse lookup in ProcMap for guest PID of a Proc
+/// Reverse lookup in ProcMap for NsPid of a Proc
 pub fn getNsPid(self: *Self, proc: *Proc) ?NsPid {
     var iterator = self.procs.iterator();
     while (iterator.next()) |entry| {

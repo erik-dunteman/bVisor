@@ -10,6 +10,7 @@ const write = @import("handlers/write.zig");
 const readv = @import("handlers/readv.zig");
 const writev = @import("handlers/writev.zig");
 const openat = @import("handlers/openat.zig");
+const close = @import("handlers/close.zig");
 const getpid = @import("handlers/getpid.zig");
 const getppid = @import("handlers/getppid.zig");
 const gettid = @import("handlers/gettid.zig");
@@ -23,6 +24,7 @@ pub inline fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.
     return switch (sys) {
         // Implemented - files
         .openat => openat.handle(notif, supervisor),
+        .close => close.handle(notif, supervisor),
         .read => read.handle(notif, supervisor),
         .write => write.handle(notif, supervisor),
         .readv => readv.handle(notif, supervisor),
@@ -38,7 +40,6 @@ pub inline fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.
         .clone => replyContinue(notif.id),
 
         // To implement - files
-        .close,
         .fstat,
         .fstatat64,
         .fcntl,

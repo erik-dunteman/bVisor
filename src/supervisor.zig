@@ -1,15 +1,14 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const linux = std.os.linux;
 const posix = std.posix;
 const Io = std.Io;
 const types = @import("types.zig");
 const syscalls = @import("virtual/syscall/syscalls.zig");
-const SupervisorFD = types.SupervisorFD;
 const Result = types.LinuxResult;
 const Logger = types.Logger;
 const Procs = @import("virtual/proc/Procs.zig");
-const Cow = @import("virtual/fs/Cow.zig");
-const Tmp = @import("virtual/fs/Tmp.zig");
+const OverlayRoot = @import("virtual/OverlayRoot.zig");
 const Allocator = std.mem.Allocator;
 
 const Self = @This();
@@ -17,32 +16,25 @@ const Self = @This();
 allocator: Allocator,
 io: Io,
 init_guest_pid: linux.pid_t,
-notify_fd: SupervisorFD,
+notify_fd: linux.fd_t,
 logger: Logger,
 
 // All procs starting from the initial guest proc are assigned a virtual PID and tracked via guest_procs
 // All pros track their own virtual namespaces and file descriptors
 guest_procs: Procs,
 
-// COW filesystem for sandbox isolation
-cow: Cow,
-// Private /tmp for sandbox isolation
-tmp: Tmp,
+// Overlay root for sandbox filesystem isolation (COW + private /tmp)
+overlay: OverlayRoot,
 
-pub fn init(allocator: Allocator, io: Io, notify_fd: SupervisorFD, init_guest_pid: linux.pid_t) !Self {
+pub fn init(allocator: Allocator, io: Io, notify_fd: linux.fd_t, init_guest_pid: linux.pid_t) !Self {
     const logger = Logger.init(.supervisor);
     var guest_procs = Procs.init(allocator);
     errdefer guest_procs.deinit();
-    _ = try guest_procs.handleInitialProcess(init_guest_pid); // ERIK TODO: "handle" to "register"
+    _ = try guest_procs.handleInitialProcess(init_guest_pid);
 
-    // Generate shared UID for all sandbox directories
-    const uid = Cow.generateUid(); // ERIK TODO: move impl into here, why have it in cow? dumb
-
-    // ERIK TODO: merge COW and TMP into a VFS struct, single init and deinit
-    var cow = try Cow.init(io, uid);
-    errdefer cow.deinit(io);
-    var tmp = try Tmp.init(io, uid);
-    errdefer tmp.deinit(io);
+    const uid = generateUid();
+    var overlay = try OverlayRoot.init(io, uid);
+    errdefer overlay.deinit();
 
     return .{
         .allocator = allocator,
@@ -51,9 +43,18 @@ pub fn init(allocator: Allocator, io: Io, notify_fd: SupervisorFD, init_guest_pi
         .notify_fd = notify_fd,
         .logger = logger,
         .guest_procs = guest_procs,
-        .cow = cow,
-        .tmp = tmp,
+        .overlay = overlay,
     };
+}
+
+fn generateUid() [16]u8 {
+    var uid_bytes: [8]u8 = undefined;
+    if (builtin.is_test) {
+        @memcpy(&uid_bytes, "testtest");
+    } else {
+        std.crypto.random.bytes(&uid_bytes);
+    }
+    return std.fmt.bytesToHex(uid_bytes, .lower);
 }
 
 pub fn deinit(self: *Self) void {
@@ -61,8 +62,7 @@ pub fn deinit(self: *Self) void {
         posix.close(self.notify_fd);
     }
     self.guest_procs.deinit();
-    self.cow.deinit(self.io);
-    self.tmp.deinit(self.io);
+    self.overlay.deinit();
 }
 
 /// Main notification loop. Reads syscall notifications from the kernel,
