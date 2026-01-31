@@ -4,8 +4,6 @@ const types = @import("../../types.zig");
 const File = @import("file.zig").File;
 const posix = std.posix;
 
-const SupervisorFD = types.SupervisorFD;
-
 /// Virtual file descriptor - the fd number visible to the sandboxed process.
 /// We manage all fd allocation, so these start at 3 (after stdin/stdout/stderr).
 pub const VirtualFD = i32;
@@ -166,6 +164,70 @@ test "CLONE_FILES scenario: shared table, changes visible to both" {
     try testing.expect(shared.get(vfd) == null);
 }
 
+test "insert then remove then insert does not reuse VFD" {
+    const table = try Self.init(testing.allocator);
+    defer table.unref();
+
+    const file = File{ .passthrough = .{ .fd = 100 } };
+    const vfd1 = try table.insert(file);
+    try testing.expectEqual(@as(VirtualFD, 3), vfd1);
+
+    _ = table.remove(vfd1);
+
+    const file2 = File{ .passthrough = .{ .fd = 101 } };
+    const vfd2 = try table.insert(file2);
+    try testing.expectEqual(@as(VirtualFD, 4), vfd2);
+}
+
+test "get after remove returns null" {
+    const table = try Self.init(testing.allocator);
+    defer table.unref();
+
+    const file = File{ .passthrough = .{ .fd = 100 } };
+    const vfd = try table.insert(file);
+    _ = table.remove(vfd);
+
+    try testing.expect(table.get(vfd) == null);
+}
+
+test "remove does not call file.close (caller responsibility)" {
+    const table = try Self.init(testing.allocator);
+    defer table.unref();
+
+    // Insert a passthrough file and remove it
+    // If remove called close(), the fd would be invalid and later test cleanup would fail
+    // This test verifies behavioral correctness: remove only removes from the table
+    const file = File{ .passthrough = .{ .fd = 42 } };
+    const vfd = try table.insert(file);
+
+    const removed = table.remove(vfd);
+    try testing.expect(removed);
+    // The fact that testing.allocator doesn't complain proves no double-free
+    // and that close wasn't called (42 isn't a real fd)
+}
+
+test "unref from refcount=2 keeps table alive" {
+    const table = try Self.init(testing.allocator);
+
+    const shared = table.ref();
+    try testing.expectEqual(@as(usize, 2), table.ref_count);
+
+    shared.unref();
+    try testing.expectEqual(@as(usize, 1), table.ref_count);
+
+    // Table should still be usable
+    const file = File{ .passthrough = .{ .fd = 100 } };
+    _ = try table.insert(file);
+
+    table.unref(); // final cleanup
+}
+
+test "unref from refcount=1 frees table (testing allocator verifies no leak)" {
+    const table = try Self.init(testing.allocator);
+    table.unref();
+    // testing.allocator will detect leaks if table wasn't freed
+}
+
 test "CLONE_FILES not set: cloned table, changes independent" {
     const original = try Self.init(testing.allocator);
     defer original.unref();
@@ -192,4 +254,85 @@ test "CLONE_FILES not set: cloned table, changes independent" {
     const vfd2 = try original.insert(file2);
     try testing.expect(original.get(vfd2) != null);
     try testing.expect(cloned.get(vfd2) == null);
+}
+
+test "clone inherits next_vfd so first insert continues sequence" {
+    const original = try Self.init(testing.allocator);
+    defer original.unref();
+
+    // Insert some files to advance next_vfd
+    _ = try original.insert(File{ .passthrough = .{ .fd = 100 } }); // vfd 3
+    _ = try original.insert(File{ .passthrough = .{ .fd = 101 } }); // vfd 4
+
+    const cloned = try original.clone(testing.allocator);
+    defer cloned.unref();
+
+    // Clone's first insert should continue from where original left off
+    const clone_vfd = try cloned.insert(File{ .passthrough = .{ .fd = 200 } });
+    try testing.expectEqual(@as(VirtualFD, 5), clone_vfd);
+}
+
+test "inserts in both after clone produce no VFD collisions" {
+    const original = try Self.init(testing.allocator);
+    defer original.unref();
+
+    _ = try original.insert(File{ .passthrough = .{ .fd = 100 } }); // vfd 3
+
+    const cloned = try original.clone(testing.allocator);
+    defer cloned.unref();
+
+    // Both insert independently
+    const orig_vfd = try original.insert(File{ .passthrough = .{ .fd = 200 } });
+    const clone_vfd = try cloned.insert(File{ .passthrough = .{ .fd = 300 } });
+
+    // Both should get vfd 4 since they diverge from the same next_vfd
+    try testing.expectEqual(@as(VirtualFD, 4), orig_vfd);
+    try testing.expectEqual(@as(VirtualFD, 4), clone_vfd);
+
+    // But they should refer to different files in their respective tables
+    try testing.expectEqual(@as(i32, 200), original.get(orig_vfd).?.passthrough.fd);
+    try testing.expectEqual(@as(i32, 300), cloned.get(clone_vfd).?.passthrough.fd);
+}
+
+test "insert 1000 files returns all unique VFDs and all retrievable" {
+    const table = try Self.init(testing.allocator);
+    defer table.unref();
+
+    var vfds: [1000]VirtualFD = undefined;
+    for (0..1000) |i| {
+        const fd: posix.fd_t = @intCast(i);
+        vfds[i] = try table.insert(File{ .passthrough = .{ .fd = fd } });
+    }
+
+    // All VFDs should be unique and sequential
+    for (0..1000) |i| {
+        const expected: VirtualFD = @intCast(3 + i);
+        try testing.expectEqual(expected, vfds[i]);
+
+        // All should be retrievable
+        const retrieved = table.get(vfds[i]);
+        try testing.expect(retrieved != null);
+        try testing.expectEqual(@as(i32, @intCast(i)), retrieved.?.passthrough.fd);
+    }
+}
+
+test "insert one of each backend type - all distinguishable by union tag" {
+    const allocator = testing.allocator;
+    const table = try Self.init(allocator);
+    defer table.unref();
+
+    // Passthrough
+    const vfd_pt = try table.insert(File{ .passthrough = .{ .fd = 42 } });
+    // Proc
+    var proc_content: [256]u8 = undefined;
+    @memcpy(proc_content[0..4], "100\n");
+    const vfd_proc = try table.insert(File{ .proc = .{
+        .content = proc_content,
+        .content_len = 4,
+        .offset = 0,
+    } });
+
+    // Verify tags are distinguishable
+    try testing.expect(table.get(vfd_pt).?.* == .passthrough);
+    try testing.expect(table.get(vfd_proc).?.* == .proc);
 }

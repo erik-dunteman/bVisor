@@ -86,3 +86,116 @@ pub fn cowExists(self: *const Self, path: []const u8) bool {
     posix.close(fd);
     return true;
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+test "init creates cow and tmp subdirectories" {
+    const io = testing.io;
+    const uid: [16]u8 = "ovtestovtest0001".*;
+    var overlay = try Self.init(io, uid);
+    defer overlay.deinit();
+
+    // Verify cow subdir exists
+    var cow_buf: [512]u8 = undefined;
+    const cow_dir = std.fmt.bufPrint(&cow_buf, "{s}/cow", .{overlay.rootPath()}) catch unreachable;
+    try std.Io.Dir.accessAbsolute(io, cow_dir, .{});
+
+    // Verify tmp subdir exists
+    var tmp_buf: [512]u8 = undefined;
+    const tmp_dir = std.fmt.bufPrint(&tmp_buf, "{s}/tmp", .{overlay.rootPath()}) catch unreachable;
+    try std.Io.Dir.accessAbsolute(io, tmp_dir, .{});
+}
+
+test "root path formatted as /tmp/.bvisor/sb/{uid}" {
+    const io = testing.io;
+    const uid: [16]u8 = "ovtestovtest0002".*;
+    var overlay = try Self.init(io, uid);
+    defer overlay.deinit();
+
+    const expected = try std.fmt.allocPrint(testing.allocator, "/tmp/.bvisor/sb/{s}", .{uid});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, overlay.rootPath());
+}
+
+test "resolveCow maps /etc/passwd to overlay cow dir" {
+    const io = testing.io;
+    const uid: [16]u8 = "ovtestovtest0003".*;
+    var overlay = try Self.init(io, uid);
+    defer overlay.deinit();
+
+    var buf: [512]u8 = undefined;
+    const resolved = try overlay.resolveCow("/etc/passwd", &buf);
+    const expected = try std.fmt.allocPrint(testing.allocator, "/tmp/.bvisor/sb/{s}/cow/etc/passwd", .{uid});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, resolved);
+}
+
+test "resolveTmp maps /tmp/myfile to overlay tmp dir" {
+    const io = testing.io;
+    const uid: [16]u8 = "ovtestovtest0004".*;
+    var overlay = try Self.init(io, uid);
+    defer overlay.deinit();
+
+    var buf: [512]u8 = undefined;
+    const resolved = try overlay.resolveTmp("/tmp/myfile", &buf);
+    const expected = try std.fmt.allocPrint(testing.allocator, "/tmp/.bvisor/sb/{s}/tmp/myfile", .{uid});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, resolved);
+}
+
+test "resolveTmp on non-/tmp path returns InvalidPath" {
+    const io = testing.io;
+    const uid: [16]u8 = "ovtestovtest0005".*;
+    var overlay = try Self.init(io, uid);
+    defer overlay.deinit();
+
+    var buf: [512]u8 = undefined;
+    try testing.expectError(error.InvalidPath, overlay.resolveTmp("/etc/passwd", &buf));
+}
+
+test "cowExists before any COW returns false" {
+    const io = testing.io;
+    const uid: [16]u8 = "ovtestovtest0006".*;
+    var overlay = try Self.init(io, uid);
+    defer overlay.deinit();
+
+    try testing.expect(!overlay.cowExists("/etc/passwd"));
+}
+
+test "cowExists after creating COW copy returns true" {
+    const io = testing.io;
+    const uid: [16]u8 = "ovtestovtest0007".*;
+    var overlay = try Self.init(io, uid);
+    defer overlay.deinit();
+
+    // Manually create a cow file to simulate copyFile
+    try overlay.createCowParentDirs("/etc/passwd");
+    var buf: [512]u8 = undefined;
+    const cow_path = try overlay.resolveCow("/etc/passwd", &buf);
+    const fd = try posix.open(cow_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
+    posix.close(fd);
+
+    try testing.expect(overlay.cowExists("/etc/passwd"));
+}
+
+test "deinit deletes root directory tree" {
+    const io = testing.io;
+    const uid: [16]u8 = "ovtestovtest0008".*;
+    var overlay = try Self.init(io, uid);
+
+    // Capture root path before deinit
+    var root_buf: [128]u8 = undefined;
+    const root_len = overlay.rootPath().len;
+    @memcpy(root_buf[0..root_len], overlay.rootPath());
+    const saved_root = root_buf[0..root_len];
+
+    overlay.deinit();
+
+    // Root should no longer exist
+    const access_result = std.Io.Dir.accessAbsolute(io, saved_root, .{});
+    try testing.expectError(error.FileNotFound, access_result);
+}

@@ -3,7 +3,6 @@ const posix = std.posix;
 const linux = std.os.linux;
 const types = @import("types.zig");
 const seccomp = @import("seccomp/filter.zig");
-const SupervisorFD = types.SupervisorFD;
 const Logger = types.Logger;
 const Supervisor = @import("Supervisor.zig");
 
@@ -14,7 +13,7 @@ const lookupGuestFd = deps.pidfd.lookupGuestFdWithRetry;
 
 pub fn setupAndRun(runnable: *const fn (io: std.Io) void) !void {
     // Create socket pair for IPC between child and supervisor
-    const socket_pair: [2]SupervisorFD = try posix.socketpair(
+    const socket_pair: [2]linux.fd_t = try posix.socketpair(
         linux.AF.UNIX,
         linux.SOCK.STREAM,
         0,
@@ -32,7 +31,7 @@ pub fn setupAndRun(runnable: *const fn (io: std.Io) void) !void {
     }
 }
 
-fn guestProcess(socket: SupervisorFD, runnable: *const fn (io: std.Io) void) !void {
+fn guestProcess(socket: linux.fd_t, runnable: *const fn (io: std.Io) void) !void {
     const logger = Logger.init(.guest);
     logger.log("Guest process starting", .{});
 
@@ -62,7 +61,7 @@ fn guestProcess(socket: SupervisorFD, runnable: *const fn (io: std.Io) void) !vo
     @call(.never_inline, runnable, .{io});
 }
 
-fn supervisorProcess(socket: SupervisorFD, init_guest_pid: linux.pid_t) !void {
+fn supervisorProcess(socket: linux.fd_t, init_guest_pid: linux.pid_t) !void {
     const logger = Logger.init(.supervisor);
     logger.log("Supervisor process starting", .{});
     defer logger.log("Supervisor process exiting", .{});
@@ -85,17 +84,17 @@ fn supervisorProcess(socket: SupervisorFD, init_guest_pid: linux.pid_t) !void {
     try supervisor.run();
 }
 
-fn sendFd(socket: SupervisorFD, fd: SupervisorFD) !void {
+fn sendFd(socket: linux.fd_t, fd: linux.fd_t) !void {
     var fd_bytes: [4]u8 = undefined;
-    std.mem.writeInt(SupervisorFD, &fd_bytes, fd, .little);
+    std.mem.writeInt(linux.fd_t, &fd_bytes, fd, .little);
     _ = try posix.write(socket, &fd_bytes);
 }
 
-fn recvFd(socket: SupervisorFD) !SupervisorFD {
+fn recvFd(socket: linux.fd_t) !linux.fd_t {
     var fd_bytes: [4]u8 = undefined;
     const bytes_read = try posix.read(socket, &fd_bytes);
     if (bytes_read != 4) {
         return error.FdReadFailed;
     }
-    return std.mem.readInt(SupervisorFD, &fd_bytes, .little);
+    return std.mem.readInt(linux.fd_t, &fd_bytes, .little);
 }

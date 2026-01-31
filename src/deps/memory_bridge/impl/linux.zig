@@ -3,7 +3,6 @@ const linux = std.os.linux;
 const posix = std.posix;
 const types = @import("../../../types.zig");
 const LinuxResult = types.LinuxResult;
-const SupervisorFD = types.SupervisorFD;
 
 /// Read an object of type T from child_addr in child's address space
 /// This creates a copy in the local process

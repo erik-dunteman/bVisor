@@ -66,3 +66,139 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
     logger.log("read: read {d} bytes", .{n});
     return replySuccess(notif.id, @intCast(n));
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const Procs = @import("../../proc/Procs.zig");
+const FdTable = @import("../../fs/FdTable.zig");
+const ProcFile = @import("../../fs/backend/procfile.zig").ProcFile;
+
+test "read from virtual file returns data" {
+    const allocator = testing.allocator;
+    const init_pid: Proc.AbsPid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
+    defer supervisor.deinit();
+
+    // Insert a proc file into the fd table (content "100\n")
+    const caller = supervisor.guest_procs.lookup.get(init_pid).?;
+    const proc_file = try ProcFile.open(caller, "/proc/self");
+    const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
+
+    // Create a buffer for the result
+    var result_buf: [64]u8 = undefined;
+    const notif = makeNotif(.read, .{
+        .pid = init_pid,
+        .arg0 = @as(u64, @bitCast(@as(i64, vfd))),
+        .arg1 = @intFromPtr(&result_buf),
+        .arg2 = result_buf.len,
+    });
+
+    const resp = handle(notif, &supervisor);
+    try testing.expect(!isError(resp));
+    try testing.expect(resp.val > 0);
+    try testing.expectEqualStrings("100\n", result_buf[0..@intCast(resp.val)]);
+}
+
+test "read count=5 from larger file returns at most 5 bytes" {
+    const allocator = testing.allocator;
+    const init_pid: Proc.AbsPid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
+    defer supervisor.deinit();
+
+    const caller = supervisor.guest_procs.lookup.get(init_pid).?;
+    const proc_file = try ProcFile.open(caller, "/proc/self");
+    const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
+
+    var result_buf: [64]u8 = undefined;
+    const notif = makeNotif(.read, .{
+        .pid = init_pid,
+        .arg0 = @as(u64, @bitCast(@as(i64, vfd))),
+        .arg1 = @intFromPtr(&result_buf),
+        .arg2 = 5,
+    });
+
+    const resp = handle(notif, &supervisor);
+    try testing.expect(!isError(resp));
+    try testing.expect(resp.val <= 5);
+}
+
+test "read from FD 0 (stdin) returns replyContinue" {
+    const allocator = testing.allocator;
+    const init_pid: Proc.AbsPid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
+    defer supervisor.deinit();
+
+    var buf: [64]u8 = undefined;
+    const notif = makeNotif(.read, .{
+        .pid = init_pid,
+        .arg0 = 0, // stdin
+        .arg1 = @intFromPtr(&buf),
+        .arg2 = buf.len,
+    });
+
+    const resp = handle(notif, &supervisor);
+    try testing.expect(isContinue(resp));
+}
+
+test "read count=0 returns 0" {
+    const allocator = testing.allocator;
+    const init_pid: Proc.AbsPid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
+    defer supervisor.deinit();
+
+    const caller = supervisor.guest_procs.lookup.get(init_pid).?;
+    const proc_file = try ProcFile.open(caller, "/proc/self");
+    const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
+
+    var result_buf: [64]u8 = undefined;
+    const notif = makeNotif(.read, .{
+        .pid = init_pid,
+        .arg0 = @as(u64, @bitCast(@as(i64, vfd))),
+        .arg1 = @intFromPtr(&result_buf),
+        .arg2 = 0,
+    });
+
+    const resp = handle(notif, &supervisor);
+    try testing.expect(!isError(resp));
+    try testing.expectEqual(@as(i64, 0), resp.val);
+}
+
+test "read from non-existent VFD returns EBADF" {
+    const allocator = testing.allocator;
+    const init_pid: Proc.AbsPid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
+    defer supervisor.deinit();
+
+    var buf: [64]u8 = undefined;
+    const notif = makeNotif(.read, .{
+        .pid = init_pid,
+        .arg0 = 99, // non-existent vfd
+        .arg1 = @intFromPtr(&buf),
+        .arg2 = buf.len,
+    });
+
+    const resp = handle(notif, &supervisor);
+    try testing.expect(isError(resp));
+    try testing.expectEqual(-@as(i32, @intCast(@intFromEnum(linux.E.BADF))), resp.@"error");
+}
+
+test "read with unknown caller PID returns ESRCH" {
+    const allocator = testing.allocator;
+    const init_pid: Proc.AbsPid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
+    defer supervisor.deinit();
+
+    var buf: [64]u8 = undefined;
+    const notif = makeNotif(.read, .{
+        .pid = 999, // unknown pid
+        .arg0 = 3,
+        .arg1 = @intFromPtr(&buf),
+        .arg2 = buf.len,
+    });
+
+    const resp = handle(notif, &supervisor);
+    try testing.expect(isError(resp));
+    try testing.expectEqual(-@as(i32, @intCast(@intFromEnum(linux.E.SRCH))), resp.@"error");
+}

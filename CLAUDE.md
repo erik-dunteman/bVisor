@@ -35,7 +35,7 @@ src/
   main.zig              # Entry point, demonstrates sandbox usage
   setup.zig             # Fork into child/supervisor, seccomp BPF installation
   supervisor.zig        # Main loop: recv notif → handle → send response
-  types.zig             # LinuxResult, Logger, SupervisorFD
+  types.zig             # LinuxResult, Logger
   smoke_test.zig        # TDD-style smoke test exercising sandbox syscall handling
 
   seccomp/

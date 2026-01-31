@@ -4,7 +4,6 @@ const Allocator = std.mem.Allocator;
 
 const types = @import("../../../types.zig");
 const LinuxResult = types.LinuxResult;
-const SupervisorFD = types.SupervisorFD;
 
 const Proc = @import("../../../virtual/proc/Proc.zig");
 const Procs = @import("../../../virtual/proc/Procs.zig");
@@ -25,7 +24,7 @@ pub fn readNsPids(pid: AbsPid, buf: []NsPid) ![]NsPid {
     var path_buf: [32:0]u8 = undefined;
     const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/status", .{pid}) catch unreachable;
 
-    const fd = try LinuxResult(SupervisorFD).from(
+    const fd = try LinuxResult(linux.fd_t).from(
         linux.open(path.ptr, .{ .ACCMODE = .RDONLY }, 0),
     ).unwrap();
     defer _ = linux.close(fd);
@@ -59,7 +58,7 @@ pub fn getStatus(pid: AbsPid) !ProcStatus {
     var path_buf: [32:0]u8 = undefined;
     const path = std.fmt.bufPrintZ(&path_buf, "/proc/{d}/status", .{pid}) catch unreachable;
 
-    const fd = try LinuxResult(SupervisorFD).from(
+    const fd = try LinuxResult(linux.fd_t).from(
         linux.open(path.ptr, .{ .ACCMODE = .RDONLY }, 0),
     ).unwrap();
     defer _ = linux.close(fd);

@@ -2,7 +2,6 @@ const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
 const types = @import("../types.zig");
-const SupervisorFD = types.SupervisorFD;
 const Result = types.LinuxResult;
 
 const BPFInstruction = extern struct {
@@ -19,9 +18,9 @@ const BPFFilterProgram = extern struct {
 
 /// Predict the next available FD (used for pre-sending notify FD to supervisor).
 /// Caller must ensure no FDs are opened between this call and install().
-pub fn predictNotifyFd() !SupervisorFD {
+pub fn predictNotifyFd() !linux.fd_t {
     // dup(0) returns the lowest available fd
-    const next_fd: SupervisorFD = try posix.dup(0);
+    const next_fd: linux.fd_t = try posix.dup(0);
     posix.close(next_fd);
     return next_fd;
 }
@@ -29,7 +28,7 @@ pub fn predictNotifyFd() !SupervisorFD {
 /// Install seccomp filter that intercepts all syscalls via USER_NOTIF.
 /// Returns the notify FD that the supervisor should listen on.
 /// Requires NO_NEW_PRIVS to be set first.
-pub fn install() !SupervisorFD {
+pub fn install() !linux.fd_t {
     // BPF program that triggers USER_NOTIF for all syscalls
     // In the future we can make this more restrictive
 
@@ -47,7 +46,7 @@ pub fn install() !SupervisorFD {
     // Required before installing seccomp filter
     _ = try posix.prctl(posix.PR.SET_NO_NEW_PRIVS, .{ 1, 0, 0, 0 });
 
-    return try Result(SupervisorFD).from(
+    return try Result(linux.fd_t).from(
         linux.seccomp(
             linux.SECCOMP.SET_MODE_FILTER,
             linux.SECCOMP.FILTER_FLAG.NEW_LISTENER,

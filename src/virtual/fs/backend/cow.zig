@@ -181,3 +181,276 @@ test "write to writecopy succeeds and leaves original untouched" {
         try testing.expect(file == .writecopy);
     }
 }
+
+test "read from readthrough returns original file content" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest02".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    var file = try Cow.open(&overlay, ls_path, .{ .ACCMODE = .RDONLY }, 0o644);
+    defer file.close();
+
+    // Read original content via COW readthrough
+    var cow_buf: [16]u8 = undefined;
+    const cow_n = try file.read(&cow_buf);
+
+    // Read original directly for comparison
+    const orig_fd = try posix.open(ls_path, .{ .ACCMODE = .RDONLY }, 0);
+    defer posix.close(orig_fd);
+    var orig_buf: [16]u8 = undefined;
+    const orig_n = try posix.read(orig_fd, &orig_buf);
+
+    try testing.expectEqual(orig_n, cow_n);
+    try testing.expectEqualSlices(u8, orig_buf[0..orig_n], cow_buf[0..cow_n]);
+}
+
+test "close readthrough completes without error" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest03".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    var file = try Cow.open(&overlay, ls_path, .{ .ACCMODE = .RDONLY }, 0o644);
+    file.close();
+    // No error = success
+}
+
+test "read from writecopy after write+reopen returns modified content" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest06".*;
+
+    const src_path = "/tmp/bvisor_test_cow06";
+    {
+        const fd = try posix.open(src_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
+        defer posix.close(fd);
+        _ = try posix.write(fd, "original content");
+    }
+    defer std.Io.Dir.deleteFileAbsolute(io, src_path) catch {};
+
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    // Open for write, modify
+    {
+        var file = try Cow.open(&overlay, src_path, .{ .ACCMODE = .WRONLY, .TRUNC = true }, 0o644);
+        defer file.close();
+        _ = try file.write("modified content");
+    }
+
+    // Reopen RDONLY and verify modified content
+    {
+        var file = try Cow.open(&overlay, src_path, .{ .ACCMODE = .RDONLY }, 0o644);
+        defer file.close();
+        var buf: [64]u8 = undefined;
+        const n = try file.read(&buf);
+        try testing.expectEqualStrings("modified content", buf[0..n]);
+    }
+}
+
+test "successive write opens accumulate on single COW copy" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest10".*;
+
+    const src_path = "/tmp/bvisor_test_cow10";
+    {
+        const fd = try posix.open(src_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
+        defer posix.close(fd);
+        _ = try posix.write(fd, "initial");
+    }
+    defer std.Io.Dir.deleteFileAbsolute(io, src_path) catch {};
+
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    // First write creates COW, truncates, writes "first"
+    {
+        var file = try Cow.open(&overlay, src_path, .{ .ACCMODE = .WRONLY, .TRUNC = true }, 0o644);
+        defer file.close();
+        _ = try file.write("first");
+    }
+
+    // Second write opens existing COW, truncates, writes "second"
+    {
+        var file = try Cow.open(&overlay, src_path, .{ .ACCMODE = .WRONLY, .TRUNC = true }, 0o644);
+        defer file.close();
+        _ = try file.write("second");
+    }
+
+    // Read back shows "second" (accumulated/replaced on same copy)
+    {
+        var file = try Cow.open(&overlay, src_path, .{ .ACCMODE = .RDONLY }, 0o644);
+        defer file.close();
+        var buf: [64]u8 = undefined;
+        const n = try file.read(&buf);
+        try testing.expectEqualStrings("second", buf[0..n]);
+    }
+}
+
+test "O_WRONLY triggers COW" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest11".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    var file = try Cow.open(&overlay, ls_path, .{ .ACCMODE = .WRONLY }, 0o644);
+    defer file.close();
+    try testing.expect(file == .writecopy);
+}
+
+test "O_RDWR triggers COW" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest12".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    var file = try Cow.open(&overlay, ls_path, .{ .ACCMODE = .RDWR }, 0o644);
+    defer file.close();
+    try testing.expect(file == .writecopy);
+}
+
+test "O_CREAT triggers COW" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest13".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    var file = try Cow.open(&overlay, ls_path, .{ .ACCMODE = .RDONLY, .CREAT = true }, 0o644);
+    defer file.close();
+    try testing.expect(file == .writecopy);
+}
+
+test "O_TRUNC triggers COW" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest14".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    var file = try Cow.open(&overlay, ls_path, .{ .ACCMODE = .RDONLY, .TRUNC = true }, 0o644);
+    defer file.close();
+    try testing.expect(file == .writecopy);
+}
+
+test "O_RDONLY alone stays readthrough" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest15".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    var file = try Cow.open(&overlay, ls_path, .{ .ACCMODE = .RDONLY }, 0o644);
+    defer file.close();
+    try testing.expect(file == .readthrough);
+}
+
+test "open non-existent file RDONLY returns ENOENT" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest17".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    const result = Cow.open(&overlay, "/nonexistent/path/file.txt", .{ .ACCMODE = .RDONLY }, 0o644);
+    try testing.expectError(error.FileNotFound, result);
+}
+
+test "open non-existent file WRONLY without CREAT fails" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest18".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    const result = Cow.open(&overlay, "/nonexistent/path/file.txt", .{ .ACCMODE = .WRONLY }, 0o644);
+    try testing.expectError(error.FileNotFound, result);
+}
+
+test "COW open deep path creates parent dirs in overlay" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest19".*;
+
+    // Create a deep source file
+    const deep_path = "/tmp/bvisor_test_cow19_src";
+    {
+        const fd = try posix.open(deep_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
+        defer posix.close(fd);
+        _ = try posix.write(fd, "deep content");
+    }
+    defer std.Io.Dir.deleteFileAbsolute(io, deep_path) catch {};
+
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    // Opening for write should create cow parent dirs automatically
+    var file = try Cow.open(&overlay, deep_path, .{ .ACCMODE = .WRONLY }, 0o644);
+    defer file.close();
+
+    // Verify the cow file exists
+    var buf: [512]u8 = undefined;
+    const cow_path = try overlay.resolveCow(deep_path, &buf);
+    try std.Io.Dir.accessAbsolute(io, cow_path, .{});
+}
+
+test "cow path resolution /etc/passwd -> overlay/cow/etc/passwd" {
+    const io = testing.io;
+    const uid: [16]u8 = "cowtestcowtest21".*;
+    var overlay = try OverlayRoot.init(io, uid);
+    defer overlay.deinit();
+
+    var buf: [512]u8 = undefined;
+    const resolved = try overlay.resolveCow("/etc/passwd", &buf);
+    const expected = try std.fmt.allocPrint(testing.allocator, "/tmp/.bvisor/sb/{s}/cow/etc/passwd", .{uid});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, resolved);
+}
+
+test "two overlays COW same path -> independent copies, original untouched" {
+    const io = testing.io;
+    const uid_a: [16]u8 = "cowtestcowtest2A".*;
+    const uid_b: [16]u8 = "cowtestcowtest2B".*;
+
+    const src_path = "/tmp/bvisor_test_cow22";
+    {
+        const fd = try posix.open(src_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
+        defer posix.close(fd);
+        _ = try posix.write(fd, "original");
+    }
+    defer std.Io.Dir.deleteFileAbsolute(io, src_path) catch {};
+
+    var overlay_a = try OverlayRoot.init(io, uid_a);
+    defer overlay_a.deinit();
+    var overlay_b = try OverlayRoot.init(io, uid_b);
+    defer overlay_b.deinit();
+
+    // Write different content in each overlay
+    {
+        var fa = try Cow.open(&overlay_a, src_path, .{ .ACCMODE = .WRONLY, .TRUNC = true }, 0o644);
+        defer fa.close();
+        _ = try fa.write("from A");
+    }
+    {
+        var fb = try Cow.open(&overlay_b, src_path, .{ .ACCMODE = .WRONLY, .TRUNC = true }, 0o644);
+        defer fb.close();
+        _ = try fb.write("from B");
+    }
+
+    // Read back from each overlay
+    var buf: [64]u8 = undefined;
+    {
+        var fa = try Cow.open(&overlay_a, src_path, .{ .ACCMODE = .RDONLY }, 0o644);
+        defer fa.close();
+        const n = try fa.read(&buf);
+        try testing.expectEqualStrings("from A", buf[0..n]);
+    }
+    {
+        var fb = try Cow.open(&overlay_b, src_path, .{ .ACCMODE = .RDONLY }, 0o644);
+        defer fb.close();
+        const n = try fb.read(&buf);
+        try testing.expectEqualStrings("from B", buf[0..n]);
+    }
+
+    // Verify original is untouched
+    {
+        const fd = try posix.open(src_path, .{ .ACCMODE = .RDONLY }, 0);
+        defer posix.close(fd);
+        const n = try posix.read(fd, &buf);
+        try testing.expectEqualStrings("original", buf[0..n]);
+    }
+}

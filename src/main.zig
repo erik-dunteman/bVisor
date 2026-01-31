@@ -23,6 +23,9 @@ test {
     _ = @import("virtual/syscall/handlers/readv.zig");
     _ = @import("virtual/syscall/handlers/write.zig");
     _ = @import("virtual/syscall/handlers/writev.zig");
+    _ = @import("virtual/syscall/e2e_test.zig");
+    _ = @import("virtual/OverlayRoot.zig");
+    _ = @import("virtual/fs/backend/passthrough.zig");
 }
 
 pub fn main() !void {

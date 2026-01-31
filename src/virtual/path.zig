@@ -149,3 +149,135 @@ test "path traversal /tmp/../etc/passwd routes to cow (escaped /tmp)" {
     const result = try route("/tmp/../etc/passwd");
     try testing.expectEqual(RouteResult{ .handle = .cow }, result);
 }
+
+test "/home/user/file.txt routes to cow (global default)" {
+    const result = try route("/home/user/file.txt");
+    try testing.expectEqual(RouteResult{ .handle = .cow }, result);
+}
+
+test "/dev/zero routes to passthrough" {
+    const result = try route("/dev/zero");
+    try testing.expectEqual(RouteResult{ .handle = .passthrough }, result);
+}
+
+test "/dev/random routes to passthrough" {
+    const result = try route("/dev/random");
+    try testing.expectEqual(RouteResult{ .handle = .passthrough }, result);
+}
+
+test "/dev/urandom routes to passthrough" {
+    const result = try route("/dev/urandom");
+    try testing.expectEqual(RouteResult{ .handle = .passthrough }, result);
+}
+
+test "/tmp/subdir/nested/file routes to tmp" {
+    const result = try route("/tmp/subdir/nested/file");
+    try testing.expectEqual(RouteResult{ .handle = .tmp }, result);
+}
+
+test "/sys alone is blocked" {
+    const result = try route("/sys");
+    try testing.expectEqual(RouteResult.block, result);
+}
+
+test "/run alone is blocked" {
+    const result = try route("/run");
+    try testing.expectEqual(RouteResult.block, result);
+}
+
+test "/dev/sda is blocked" {
+    const result = try route("/dev/sda");
+    try testing.expectEqual(RouteResult.block, result);
+}
+
+test "/dev/tty is blocked" {
+    const result = try route("/dev/tty");
+    try testing.expectEqual(RouteResult.block, result);
+}
+
+test "/dev/mem is blocked" {
+    const result = try route("/dev/mem");
+    try testing.expectEqual(RouteResult.block, result);
+}
+
+test "/tmp/.bvisor alone is blocked" {
+    const result = try route("/tmp/.bvisor");
+    try testing.expectEqual(RouteResult.block, result);
+}
+
+test "/tmp/.bvisor/sb/uid/cow/etc/passwd is blocked" {
+    const result = try route("/tmp/.bvisor/sb/uid/cow/etc/passwd");
+    try testing.expectEqual(RouteResult.block, result);
+}
+
+test "/proc/../sys/class/net normalizes to blocked" {
+    const result = try route("/proc/../sys/class/net");
+    try testing.expectEqual(RouteResult.block, result);
+}
+
+test "/dev/null/../zero normalizes to /dev/zero passthrough" {
+    const result = try route("/dev/null/../zero");
+    try testing.expectEqual(RouteResult{ .handle = .passthrough }, result);
+}
+
+test "/dev/null/../../etc/passwd normalizes to cow (escapes /dev)" {
+    const result = try route("/dev/null/../../etc/passwd");
+    try testing.expectEqual(RouteResult{ .handle = .cow }, result);
+}
+
+test "/tmp/.bvisor/../foo.txt normalizes to /tmp/foo.txt -> tmp" {
+    const result = try route("/tmp/.bvisor/../foo.txt");
+    try testing.expectEqual(RouteResult{ .handle = .tmp }, result);
+}
+
+test "/a/b/c/../../d/../e normalizes to /a/e -> cow" {
+    const result = try route("/a/b/c/../../d/../e");
+    try testing.expectEqual(RouteResult{ .handle = .cow }, result);
+}
+
+test "/tmpfoo does not match /tmp prefix" {
+    const result = try route("/tmpfoo");
+    try testing.expectEqual(RouteResult{ .handle = .cow }, result);
+}
+
+test "/system/file does not match /sys prefix" {
+    const result = try route("/system/file");
+    try testing.expectEqual(RouteResult{ .handle = .cow }, result);
+}
+
+test "/devnull does not match /dev prefix" {
+    const result = try route("/devnull");
+    try testing.expectEqual(RouteResult{ .handle = .cow }, result);
+}
+
+test "/running/file does not match /run prefix" {
+    const result = try route("/running/file");
+    try testing.expectEqual(RouteResult{ .handle = .cow }, result);
+}
+
+test "/proc alone routes to proc" {
+    const result = try route("/proc");
+    try testing.expectEqual(RouteResult{ .handle = .proc }, result);
+}
+
+test "/ alone routes to cow (global default)" {
+    const result = try route("/");
+    try testing.expectEqual(RouteResult{ .handle = .cow }, result);
+}
+
+test "path near 512-byte normalization buffer succeeds" {
+    // resolvePosix uses the FixedBufferAllocator for its result buffer.
+    // An absolute path of ~250 bytes leaves enough room for internal overhead.
+    var long_path: [250]u8 = undefined;
+    long_path[0] = '/';
+    @memset(long_path[1..], 'a');
+    const result = try route(&long_path);
+    try testing.expectEqual(RouteResult{ .handle = .cow }, result);
+}
+
+test "path exceeding 512-byte buffer returns error" {
+    var long_path: [600]u8 = undefined;
+    long_path[0] = '/';
+    @memset(long_path[1..], 'a');
+    try testing.expectError(error.OutOfMemory, route(&long_path));
+}

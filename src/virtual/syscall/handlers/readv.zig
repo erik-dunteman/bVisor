@@ -90,3 +90,118 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
     logger.log("readv: read {d} bytes", .{n});
     return replySuccess(notif.id, @intCast(n));
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const Procs = @import("../../proc/Procs.zig");
+const FdTable = @import("../../fs/FdTable.zig");
+const ProcFileMod = @import("../../fs/backend/procfile.zig");
+const ProcFile = ProcFileMod.ProcFile;
+
+test "readv single iovec reads data correctly" {
+    const allocator = testing.allocator;
+    const init_pid: Proc.AbsPid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
+    defer supervisor.deinit();
+
+    const caller = supervisor.guest_procs.lookup.get(init_pid).?;
+    const proc_file = try ProcFile.open(caller, "/proc/self");
+    const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
+
+    // Set up a single iovec
+    var result_buf: [64]u8 = undefined;
+    var iovecs = [_]posix.iovec{
+        .{ .base = &result_buf, .len = result_buf.len },
+    };
+
+    const notif = makeNotif(.readv, .{
+        .pid = init_pid,
+        .arg0 = @as(u64, @bitCast(@as(i64, vfd))),
+        .arg1 = @intFromPtr(&iovecs),
+        .arg2 = 1,
+    });
+
+    const resp = handle(notif, &supervisor);
+    try testing.expect(!isError(resp));
+    try testing.expect(resp.val > 0);
+    try testing.expectEqualStrings("100\n", result_buf[0..@intCast(resp.val)]);
+}
+
+test "readv multiple iovecs distributes data across buffers" {
+    const allocator = testing.allocator;
+    const init_pid: Proc.AbsPid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
+    defer supervisor.deinit();
+
+    const caller = supervisor.guest_procs.lookup.get(init_pid).?;
+    const proc_file = try ProcFile.open(caller, "/proc/self");
+    const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
+
+    // Content is "100\n" (4 bytes), distribute across 2-byte buffers
+    var buf1: [2]u8 = undefined;
+    var buf2: [2]u8 = undefined;
+    var iovecs = [_]posix.iovec{
+        .{ .base = &buf1, .len = 2 },
+        .{ .base = &buf2, .len = 2 },
+    };
+
+    const notif = makeNotif(.readv, .{
+        .pid = init_pid,
+        .arg0 = @as(u64, @bitCast(@as(i64, vfd))),
+        .arg1 = @intFromPtr(&iovecs),
+        .arg2 = 2,
+    });
+
+    const resp = handle(notif, &supervisor);
+    try testing.expect(!isError(resp));
+    try testing.expectEqual(@as(i64, 4), resp.val);
+    try testing.expectEqualStrings("10", &buf1);
+    try testing.expectEqualStrings("0\n", &buf2);
+}
+
+test "readv FD 0 returns replyContinue" {
+    const allocator = testing.allocator;
+    const init_pid: Proc.AbsPid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
+    defer supervisor.deinit();
+
+    var buf: [64]u8 = undefined;
+    var iovecs = [_]posix.iovec{
+        .{ .base = &buf, .len = buf.len },
+    };
+
+    const notif = makeNotif(.readv, .{
+        .pid = init_pid,
+        .arg0 = 0, // stdin
+        .arg1 = @intFromPtr(&iovecs),
+        .arg2 = 1,
+    });
+
+    const resp = handle(notif, &supervisor);
+    try testing.expect(isContinue(resp));
+}
+
+test "readv non-existent VFD returns EBADF" {
+    const allocator = testing.allocator;
+    const init_pid: Proc.AbsPid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_pid);
+    defer supervisor.deinit();
+
+    var buf: [64]u8 = undefined;
+    var iovecs = [_]posix.iovec{
+        .{ .base = &buf, .len = buf.len },
+    };
+
+    const notif = makeNotif(.readv, .{
+        .pid = init_pid,
+        .arg0 = 99,
+        .arg1 = @intFromPtr(&iovecs),
+        .arg2 = 1,
+    });
+
+    const resp = handle(notif, &supervisor);
+    try testing.expect(isError(resp));
+    try testing.expectEqual(-@as(i32, @intCast(@intFromEnum(linux.E.BADF))), resp.@"error");
+}

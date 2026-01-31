@@ -273,6 +273,175 @@ test "write returns ReadOnlyFileSystem" {
     try testing.expectError(error.ReadOnlyFileSystem, file.write("test"));
 }
 
+test "parseProcPath - /proc/0 (zero PID) is invalid" {
+    try testing.expectError(error.InvalidPath, ProcFile.parseProcPath("/proc/0"));
+}
+
+test "parseProcPath - /proc/-1 (negative) is invalid" {
+    try testing.expectError(error.InvalidPath, ProcFile.parseProcPath("/proc/-1"));
+}
+
+test "child in new namespace (CLONE_NEWPID) /proc/self returns 1" {
+    const allocator = testing.allocator;
+    var v_procs = Procs.init(allocator);
+    defer v_procs.deinit();
+    defer proc_info.testing.reset(allocator);
+
+    try v_procs.handleInitialProcess(100);
+    const root = v_procs.lookup.get(100).?;
+
+    // Child in new namespace gets NsPid 1
+    const nspids = [_]Proc.NsPid{ 200, 1 };
+    try proc_info.testing.setupNsPids(allocator, 200, &nspids);
+    _ = try v_procs.registerChild(root, 200, Procs.CloneFlags.from(std.os.linux.CLONE.NEWPID));
+    const child = v_procs.lookup.get(200).?;
+
+    var file = try ProcFile.open(child, "/proc/self");
+    var buf: [64]u8 = undefined;
+    const n = try file.read(&buf);
+    try testing.expectEqualStrings("1\n", buf[0..n]);
+}
+
+test "open /proc/self/status - child with parent invisible (new namespace) has PPid 0" {
+    const allocator = testing.allocator;
+    var v_procs = Procs.init(allocator);
+    defer v_procs.deinit();
+    defer proc_info.testing.reset(allocator);
+
+    try v_procs.handleInitialProcess(100);
+    const root = v_procs.lookup.get(100).?;
+
+    const nspids = [_]Proc.NsPid{ 200, 1 };
+    try proc_info.testing.setupNsPids(allocator, 200, &nspids);
+    _ = try v_procs.registerChild(root, 200, Procs.CloneFlags.from(std.os.linux.CLONE.NEWPID));
+    const child = v_procs.lookup.get(200).?;
+
+    var file = try ProcFile.open(child, "/proc/self/status");
+    var buf: [256]u8 = undefined;
+    const n = try file.read(&buf);
+    const content = buf[0..n];
+
+    try testing.expect(std.mem.indexOf(u8, content, "PPid:\t0\n") != null);
+    try testing.expect(std.mem.indexOf(u8, content, "Pid:\t1\n") != null);
+}
+
+test "open /proc/self/status - child with visible parent has correct PPid" {
+    const allocator = testing.allocator;
+    var v_procs = Procs.init(allocator);
+    defer v_procs.deinit();
+
+    try v_procs.handleInitialProcess(100);
+    const root = v_procs.lookup.get(100).?;
+    _ = try v_procs.registerChild(root, 200, Procs.CloneFlags.from(0));
+    const child = v_procs.lookup.get(200).?;
+
+    var file = try ProcFile.open(child, "/proc/self/status");
+    var buf: [256]u8 = undefined;
+    const n = try file.read(&buf);
+    const content = buf[0..n];
+
+    try testing.expect(std.mem.indexOf(u8, content, "Pid:\t200\n") != null);
+    try testing.expect(std.mem.indexOf(u8, content, "PPid:\t100\n") != null);
+}
+
+test "open /proc/N where N is in different namespace returns FileNotFound" {
+    const allocator = testing.allocator;
+    var v_procs = Procs.init(allocator);
+    defer v_procs.deinit();
+    defer proc_info.testing.reset(allocator);
+
+    try v_procs.handleInitialProcess(100);
+    const root = v_procs.lookup.get(100).?;
+
+    // Child in new namespace
+    const nspids = [_]Proc.NsPid{ 200, 1 };
+    try proc_info.testing.setupNsPids(allocator, 200, &nspids);
+    _ = try v_procs.registerChild(root, 200, Procs.CloneFlags.from(std.os.linux.CLONE.NEWPID));
+    const child = v_procs.lookup.get(200).?;
+
+    // Child cannot see root (NsPid 100) since root is not in child's namespace
+    try testing.expectError(error.FileNotFound, ProcFile.open(child, "/proc/100"));
+}
+
+test "read past end returns 0 (EOF)" {
+    const allocator = testing.allocator;
+    var v_procs = Procs.init(allocator);
+    defer v_procs.deinit();
+
+    try v_procs.handleInitialProcess(100);
+    const proc = v_procs.lookup.get(100).?;
+
+    var file = try ProcFile.open(proc, "/proc/self");
+    // Content is "100\n" (4 bytes)
+
+    // Read all content
+    var buf: [64]u8 = undefined;
+    const n = try file.read(&buf);
+    try testing.expect(n > 0);
+
+    // Second read should return 0 (EOF)
+    const n2 = try file.read(&buf);
+    try testing.expectEqual(@as(usize, 0), n2);
+}
+
+test "read with 1-byte buffer walks through content" {
+    const allocator = testing.allocator;
+    var v_procs = Procs.init(allocator);
+    defer v_procs.deinit();
+
+    try v_procs.handleInitialProcess(5);
+    const proc = v_procs.lookup.get(5).?;
+
+    var file = try ProcFile.open(proc, "/proc/self");
+    // Content is "5\n" (2 bytes)
+
+    var byte_buf: [1]u8 = undefined;
+    var n = try file.read(&byte_buf);
+    try testing.expectEqual(@as(usize, 1), n);
+    try testing.expectEqual(@as(u8, '5'), byte_buf[0]);
+
+    n = try file.read(&byte_buf);
+    try testing.expectEqual(@as(usize, 1), n);
+    try testing.expectEqual(@as(u8, '\n'), byte_buf[0]);
+
+    n = try file.read(&byte_buf);
+    try testing.expectEqual(@as(usize, 0), n);
+}
+
+test "close is no-op" {
+    const allocator = testing.allocator;
+    var v_procs = Procs.init(allocator);
+    defer v_procs.deinit();
+
+    try v_procs.handleInitialProcess(100);
+    const proc = v_procs.lookup.get(100).?;
+
+    var file = try ProcFile.open(proc, "/proc/self");
+    file.close();
+    // No error = success
+}
+
+test "content frozen at open time (snapshot semantics)" {
+    const allocator = testing.allocator;
+    var v_procs = Procs.init(allocator);
+    defer v_procs.deinit();
+
+    try v_procs.handleInitialProcess(100);
+    const root = v_procs.lookup.get(100).?;
+
+    // Open /proc/self/status for root (should show child count context)
+    var file = try ProcFile.open(root, "/proc/self");
+    // Content is "100\n" captured at open time
+
+    // Now add a child - this shouldn't affect the already-opened file
+    _ = try v_procs.registerChild(root, 200, Procs.CloneFlags.from(0));
+
+    // Read from the already-opened file - should still show original content
+    var buf: [64]u8 = undefined;
+    const n = try file.read(&buf);
+    try testing.expectEqualStrings("100\n", buf[0..n]);
+}
+
 test "offset tracking works across multiple reads" {
     const allocator = testing.allocator;
     var v_procs = Procs.init(allocator);
