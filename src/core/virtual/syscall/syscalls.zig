@@ -42,8 +42,9 @@ pub inline fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.
 
         // Passthrough - create child process (kernel only, we lazily discover child later)
         .clone => replyContinue(notif.id),
-        // Passthrough - wait for child (kernel handles blocking, exit_group handles proc cleanup)
+        // Passthrough - wait for child(ren) (kernel handles blocking, exit_group handles proc cleanup)
         .wait4 => replyContinue(notif.id),
+        .waitid => replyContinue(notif.id),
 
         // To implement - files
         .fstat,

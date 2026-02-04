@@ -16,7 +16,6 @@ const isError = @import("../../../seccomp/notif.zig").isError;
 
 /// getppid return the namespaced TGID of the parent thread
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
-
     supervisor.mutex.lock();
     defer supervisor.mutex.unlock();
 
@@ -42,7 +41,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
     if (!caller.canSee(parent)) return replySuccess(notif.id, 0);
 
     // Get namespaced TGID of parent's ThreadGroup, which matches the namespaced TID of the parent
-    const ns_ptgid: NsTgid = caller.namespace.getNsTid(parent) orelse std.debug.panic("getpid: Supervisor invariant violated - caller's Namespace doesn't contain the parent Thread", .{});
+    const ns_ptgid: NsTgid = caller.namespace.getNsTid(parent) orelse std.debug.panic("getppid: Supervisor invariant violated - caller's Namespace doesn't contain the parent Thread", .{});
 
     return replySuccess(notif.id, @intCast(ns_ptgid));
 }
