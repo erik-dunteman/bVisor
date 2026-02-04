@@ -1,16 +1,10 @@
-import { arch, platform } from "os";
-import { ZigPtr } from "./napi";
-
-if (platform() !== "linux") {
-  throw new Error("bVisor only supports Linux");
-}
-
-const libBvisor = require(`@bvisor/linux-${arch()}`);
+import { External } from "./napi";
+import { libBvisor } from "./libBvisor";
 
 class Stream {
-  private ptr: ZigPtr<"Stream">;
+  private ptr: External<"Stream">;
 
-  constructor(ptr: ZigPtr<"Stream">) {
+  constructor(ptr: External<"Stream">) {
     this.ptr = ptr;
   }
 
@@ -19,7 +13,7 @@ class Stream {
     return new ReadableStream({
       async pull(controller) {
         // TODO: make streamNext return a promise
-        const chunk: Uint8Array | null = libBvisor.streamNext(self.ptr);
+        const chunk = libBvisor.streamNext(self.ptr);
         if (chunk) {
           controller.enqueue(chunk);
         } else {
@@ -30,20 +24,15 @@ class Stream {
   }
 }
 
-interface RunCmdResult {
-  stdout: ZigPtr<"Stream">;
-  stderr: ZigPtr<"Stream">;
-}
-
 export class Sandbox {
-  private ptr: unknown;
+  private ptr: External<"Sandbox">;
 
   constructor() {
     this.ptr = libBvisor.createSandbox();
   }
 
   runCmd(command: string) {
-    const result: RunCmdResult = libBvisor.sandboxRunCmd(this.ptr, command);
+    const result = libBvisor.sandboxRunCmd(this.ptr, command);
     return createOutput(
       new Stream(result.stdout).toReadableStream(),
       new Stream(result.stderr).toReadableStream()

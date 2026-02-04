@@ -91,18 +91,13 @@ pub fn registerFunction(
     }
 }
 
+/// Generates create/wrap/unwrap/finalize helpers for exposing a Zig type as an N-API external.
+/// All JS-facing values are plain c.napi_value — type discipline lives on the TS side via External<T>.
 pub fn ZigExternal(comptime T: type) type {
     return struct {
-        pub fn ZigPtr(comptime InnerT: type) type {
-            // InnerT is phantom, just to add apparent typing
-            // To match the TS-side type for this same construct
-            _ = InnerT;
-            return *c.struct_napi_value__;
-        }
-
-        /// N-API callback: creates a new T instance an
-        /// Use this in lib.zig to declare the constructor function
-        pub fn create(env: c.napi_env, _: c.napi_callback_info) callconv(.c) ?ZigPtr(T) {
+        /// N-API callback: creates a new T instance and wraps it as an external.
+        /// Use this in lib.zig to declare the constructor function.
+        pub fn create(env: c.napi_env, _: c.napi_callback_info) callconv(.c) c.napi_value {
             const self = T.init(allocator) catch {
                 throw(env, "Failed to initialize " ++ @typeName(T));
                 return null;
@@ -113,7 +108,7 @@ pub fn ZigExternal(comptime T: type) type {
             };
         }
 
-        /// Called automatically when wrapped value gets GC'ed
+        /// Called automatically when the external gets GC'ed.
         fn finalize(_: c.napi_env, data: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
             if (data) |ptr| {
                 var self: *T = @ptrCast(@alignCast(ptr));
@@ -121,18 +116,18 @@ pub fn ZigExternal(comptime T: type) type {
             }
         }
 
-        /// Wrap an existing Zig pointer as an N-API external value.
-        /// This registers finalize as a callback when the GC runs on the external.
-        pub fn wrap(env: c.napi_env, ptr: *T) !ZigPtr(T) {
-            var result: ?ZigPtr(T) = undefined;
+        /// Wrap an existing Zig pointer as an N-API external.
+        /// Registers finalize as a destructor for when the GC collects the external.
+        pub fn wrap(env: c.napi_env, ptr: *T) !c.napi_value {
+            var result: c.napi_value = undefined;
             if (c.napi_create_external(env, ptr, finalize, null, &result) != c.napi_ok) {
                 throw(env, "Failed to create external " ++ @typeName(T));
                 return error.NapiError;
             }
-            if (result == null) return error.NapiError;
-            return result.?;
+            return result;
         }
 
+        /// Extract the first argument as an external and unwrap it to *T.
         pub fn unwrap(env: c.napi_env, info: c.napi_callback_info) !*T {
             var argc: usize = 1;
             var argv: [1]c.napi_value = undefined;
@@ -145,15 +140,12 @@ pub fn ZigExternal(comptime T: type) type {
                 return error.NapiError;
             }
             var data: ?*anyopaque = null;
-            const external_ptr: ?ZigPtr(T) = argv[0]; // First arg is the external pointer
 
-            // Unwrap external pointer into underlying data
-            if (c.napi_get_value_external(env, external_ptr, &data) != c.napi_ok) {
+            if (c.napi_get_value_external(env, argv[0], &data) != c.napi_ok) {
                 throw(env, "Argument must be " ++ @typeName(T));
                 return error.NapiError;
             }
 
-            // Cast data to the expected zig type
             if (data) |ptr| {
                 const self: *T = @ptrCast(@alignCast(ptr));
                 return self;
