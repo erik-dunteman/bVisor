@@ -23,6 +23,10 @@ logger: Logger,
 // All pros track their own virtual namespaces and file descriptors
 guest_procs: Procs,
 
+// Mutex protecting the entirety of Supervisor's internal state, (Procs/Proc/Namespace/FdTable)
+// This is the simplest, dumbest implementation, will optimize over time.
+mutex: std.Thread.Mutex = .{},
+
 // Overlay root for sandbox filesystem isolation (COW + private /tmp)
 overlay: OverlayRoot,
 
@@ -65,12 +69,39 @@ pub fn deinit(self: *Self) void {
     self.overlay.deinit();
 }
 
-/// Main notification loop. Reads syscall notifications from the kernel,
 pub fn run(self: *Self) !void {
-    // Supervisor handles syscalls in a single blocking thread. 80/20 solution for now, will rethink once we benchmark
+    const max_workers = 8;
+    const num_workers = @min(std.Thread.getCpuCount() catch 1, max_workers);
+
+    // To build an array of futures, must get the exact type of the worker function's return value
+    const WorkerReturn = @typeInfo(@TypeOf(Self.worker)).@"fn".return_type.?;
+    const WorkerFuture = Io.Future(WorkerReturn);
+    var futures: [max_workers]WorkerFuture = undefined;
+
+    // Spawn workers
+    for (0..num_workers) |i| {
+        futures[i] = self.io.async(Self.worker, .{ self, i });
+    }
+
+    // Cancel workers on exit
+    defer for (futures[0..num_workers]) |*f| {
+        _ = f.cancel(self.io) catch {};
+    };
+
+    // Wait for any worker to exit
+    for (futures[0..num_workers]) |*f| {
+        try f.await(self.io);
+    }
+}
+
+/// Main notification loop. Reads syscall notifications from the kernel and responds
+/// Multiple workers may run at a single time
+fn worker(self: *Self, worker_id: usize) !void {
+    self.logger.log("Worker {d} starting", .{worker_id});
     while (true) {
         // Receive syscall notification from kernel
         const notif = try self.recv() orelse return;
+        self.logger.log("Worker {d} received syscall notification", .{worker_id});
         const resp = syscalls.handle(notif, self);
         try self.send(resp);
     }

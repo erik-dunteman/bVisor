@@ -1,9 +1,9 @@
 const std = @import("std");
-const FileBackend = @import("fs/file.zig").FileBackend;
+const FileBackendType = @import("fs/File.zig").BackendType;
 
 pub const RouteResult = union(enum) {
     block: void, // deny access with EPERM
-    handle: FileBackend,
+    handle: FileBackendType,
 };
 
 pub fn route(path: []const u8) !RouteResult {

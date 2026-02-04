@@ -7,13 +7,14 @@ const AbsPid = Proc.AbsPid;
 const proc_info = @import("../../deps/proc_info/proc_info.zig");
 
 const ProcMap = std.AutoHashMapUnmanaged(NsPid, *Proc);
+const AtomicUsize = std.atomic.Value(usize);
 
 const Self = @This();
 
 /// Namespaces are refcounted and shared between procs.
 /// Used for visibility filtering - processes can only see other processes
 /// in the same namespace or descendent namespaces.
-ref_count: usize,
+ref_count: AtomicUsize = undefined,
 allocator: Allocator,
 parent: ?*Self,
 procs: ProcMap = .empty,
@@ -21,7 +22,7 @@ procs: ProcMap = .empty,
 pub fn init(allocator: Allocator, parent: ?*Self) !*Self {
     const self = try allocator.create(Self);
     self.* = .{
-        .ref_count = 1,
+        .ref_count = AtomicUsize.init(1),
         .allocator = allocator,
         // TODO: check consistency of calling p.ref() here versus elsewhere
         .parent = if (parent) |p| p.ref() else null,
@@ -30,13 +31,15 @@ pub fn init(allocator: Allocator, parent: ?*Self) !*Self {
 }
 
 pub fn ref(self: *Self) *Self {
-    self.ref_count += 1;
+    const prev = self.ref_count.fetchAdd(1, .monotonic);
+    _ = prev;
     return self;
 }
 
 pub fn unref(self: *Self) void {
-    self.ref_count -= 1;
-    if (self.ref_count == 0) {
+    // .acq_rel required to ensure full memory syncronization before deinit
+    const prev = self.ref_count.fetchSub(1, .acq_rel);
+    if (prev == 1) {
         if (self.parent) |p| p.unref();
         self.procs.deinit(self.allocator);
         self.allocator.destroy(self);
@@ -120,14 +123,14 @@ test "Namespace refcount - ref increases count" {
     const ns1 = try Self.init(allocator, null);
     defer ns1.unref();
 
-    try testing.expectEqual(1, ns1.ref_count);
+    try testing.expectEqual(1, ns1.ref_count.load(.unordered));
 
     const ns2 = ns1.ref();
-    try testing.expectEqual(2, ns1.ref_count);
+    try testing.expectEqual(2, ns1.ref_count.load(.unordered));
     try testing.expect(ns1 == ns2);
 
     ns2.unref();
-    try testing.expectEqual(1, ns1.ref_count);
+    try testing.expectEqual(1, ns1.ref_count.load(.unordered));
 }
 
 test "Namespace refcount - unref at zero frees" {
@@ -142,10 +145,10 @@ test "Namespace refcount - child holds parent" {
     const parent = try Self.init(allocator, null);
 
     const child = try Self.init(allocator, parent);
-    try testing.expectEqual(2, parent.ref_count); // original + child reference
+    try testing.expectEqual(2, parent.ref_count.raw); // original + child reference
 
     parent.unref(); // refcount -> 1
-    try testing.expectEqual(1, parent.ref_count);
+    try testing.expectEqual(1, parent.ref_count.raw);
 
     child.unref(); // child frees, then parent refcount -> 0, parent frees
     // No leaks detected by testing.allocator

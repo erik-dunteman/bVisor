@@ -3,7 +3,7 @@ const linux = std.os.linux;
 const posix = std.posix;
 const types = @import("../../../types.zig");
 const Proc = @import("../../proc/Proc.zig");
-const File = @import("../../fs/file.zig").File;
+const File = @import("../../fs/File.zig");
 const Supervisor = @import("../../../Supervisor.zig");
 const replyContinue = @import("../../../seccomp/notif.zig").replyContinue;
 const replySuccess = @import("../../../seccomp/notif.zig").replySuccess;
@@ -30,16 +30,24 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         return replyContinue(notif.id);
     }
 
-    const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
-        logger.log("writev: process not found for pid={d}: {}", .{ caller_pid, err });
-        return replyErr(notif.id, .SRCH);
-    };
+    // Critical section: File lookup
+    // File refcounting allows us to keep a pointer to the file outside of the critical section
+    var file: *File = undefined;
+    {
+        supervisor.mutex.lock();
+        defer supervisor.mutex.unlock();
 
-    // Look up the file object
-    const file = caller.fd_table.get(fd) orelse {
-        logger.log("writev: EBADF for fd={d}", .{fd});
-        return replyErr(notif.id, .BADF);
-    };
+        const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
+            logger.log("writev: process not found for pid={d}: {}", .{ caller_pid, err });
+            return replyErr(notif.id, .SRCH);
+        };
+
+        file = caller.fd_table.get_ref(fd) orelse {
+            logger.log("writev: EBADF for fd={d}", .{fd});
+            return replyErr(notif.id, .BADF);
+        };
+    }
+    defer file.unref();
 
     // Read iovec array from child memory
     var iovecs: [MAX_IOV]posix.iovec_const = undefined;
@@ -97,7 +105,7 @@ test "writev single iovec writes data" {
 
     const caller = supervisor.guest_procs.lookup.get(init_pid).?;
     const tmp_file = try Tmp.open(&supervisor.overlay, "/tmp/writev_test1", .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
-    const vfd = try caller.fd_table.insert(File{ .tmp = tmp_file });
+    const vfd = try caller.fd_table.insert(try File.init(allocator, .{ .tmp = tmp_file }));
 
     const data = "hello";
     var iovecs = [_]posix.iovec_const{
@@ -124,7 +132,7 @@ test "writev multiple iovecs concatenated write" {
 
     const caller = supervisor.guest_procs.lookup.get(init_pid).?;
     const tmp_file = try Tmp.open(&supervisor.overlay, "/tmp/writev_test2", .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
-    const vfd = try caller.fd_table.insert(File{ .tmp = tmp_file });
+    const vfd = try caller.fd_table.insert(try File.init(allocator, .{ .tmp = tmp_file }));
 
     const d1 = "hel";
     const d2 = "lo ";

@@ -23,19 +23,28 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         return replyErr(notif.id, .INVAL);
     }
 
-    const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
-        std.log.err("kill: process not found for pid={d}: {}", .{ caller_pid, err });
-        return replyErr(notif.id, .SRCH);
-    };
+    // Critical section just to normalize target PID to absolute
+    var target_abs_pid: AbsPid = undefined;
+    {
+        supervisor.mutex.lock();
+        defer supervisor.mutex.unlock();
 
-    const target = supervisor.guest_procs.getNamespaced(caller, target_pid) catch |err| {
-        std.log.err("kill: target process not found for pid={d}: {}", .{ target_pid, err });
-        return replyErr(notif.id, .SRCH);
-    };
+        const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
+            std.log.err("kill: process not found for pid={d}: {}", .{ caller_pid, err });
+            return replyErr(notif.id, .SRCH);
+        };
+
+        const target = supervisor.guest_procs.getNamespaced(caller, target_pid) catch |err| {
+            std.log.err("kill: target process not found for pid={d}: {}", .{ target_pid, err });
+            return replyErr(notif.id, .SRCH);
+        };
+
+        target_abs_pid = target.pid;
+    }
 
     // Execute real kill syscall
     const sig: posix.SIG = @enumFromInt(signal);
-    posix.kill(@intCast(target.pid), sig) catch |err| {
+    posix.kill(@intCast(target_abs_pid), sig) catch |err| {
         const errno: linux.E = switch (err) {
             error.PermissionDenied => .PERM,
             error.ProcessNotFound => .SRCH,
@@ -43,6 +52,10 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         };
         return replyErr(notif.id, errno);
     };
+
+    // Do not remove from internal procs tracking.
+    // Killing a process is just a signal invocation.
+    // exit_group is what actually removes it from procs.
 
     return replySuccess(notif.id, 0);
 }

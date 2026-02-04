@@ -13,7 +13,9 @@ test {
     _ = @import("virtual/fs/backend/procfile.zig");
     _ = @import("virtual/fs/backend/cow.zig");
     _ = @import("virtual/fs/backend/tmp.zig");
+    _ = @import("virtual/syscall/handlers/exit.zig");
     _ = @import("virtual/syscall/handlers/exit_group.zig");
+    _ = @import("virtual/syscall/handlers/tkill.zig");
     _ = @import("virtual/syscall/handlers/getpid.zig");
     _ = @import("virtual/syscall/handlers/getppid.zig");
     _ = @import("virtual/syscall/handlers/kill.zig");

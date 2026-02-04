@@ -16,15 +16,6 @@ const BPFFilterProgram = extern struct {
     filter: [*]const BPFInstruction,
 };
 
-/// Predict the next available FD (used for pre-sending notify FD to supervisor).
-/// Caller must ensure no FDs are opened between this call and install().
-pub fn predictNotifyFd() !linux.fd_t {
-    // dup(0) returns the lowest available fd
-    const next_fd: linux.fd_t = try posix.dup(0);
-    posix.close(next_fd);
-    return next_fd;
-}
-
 /// Install seccomp filter that intercepts all syscalls via USER_NOTIF.
 /// Returns the notify FD that the supervisor should listen on.
 /// Requires NO_NEW_PRIVS to be set first.

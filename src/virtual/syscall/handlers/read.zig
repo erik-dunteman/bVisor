@@ -3,7 +3,7 @@ const linux = std.os.linux;
 const posix = std.posix;
 const types = @import("../../../types.zig");
 const Proc = @import("../../proc/Proc.zig");
-const File = @import("../../fs/file.zig").File;
+const File = @import("../../fs/File.zig");
 const Supervisor = @import("../../../Supervisor.zig");
 const testing = std.testing;
 const makeNotif = @import("../../../seccomp/notif.zig").makeNotif;
@@ -32,16 +32,24 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         return replyContinue(notif.id);
     }
 
-    const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
-        logger.log("read: process not found for pid={d}: {}", .{ caller_pid, err });
-        return replyErr(notif.id, .SRCH);
-    };
+    // Critical section: File lookup
+    // File refcounting allows us to keep a pointer to the file outside of the critical section
+    var file: *File = undefined;
+    {
+        supervisor.mutex.lock();
+        defer supervisor.mutex.unlock();
 
-    // Look up the virtual FD
-    const file = caller.fd_table.get(fd) orelse {
-        logger.log("read: EBADF for fd={d}", .{fd});
-        return replyErr(notif.id, .BADF);
-    };
+        const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
+            logger.log("read: process not found for pid={d}: {}", .{ caller_pid, err });
+            return replyErr(notif.id, .SRCH);
+        };
+
+        file = caller.fd_table.get_ref(fd) orelse {
+            logger.log("read: EBADF for fd={d}", .{fd});
+            return replyErr(notif.id, .BADF);
+        };
+    }
+    defer file.unref();
 
     // Perform read into supervisor-local buf
     // It's ok to only partially resolve count if count is larger than we're willing to stack allocate
@@ -84,7 +92,7 @@ test "read from virtual file returns data" {
     // Insert a proc file into the fd table (content "100\n")
     const caller = supervisor.guest_procs.lookup.get(init_pid).?;
     const proc_file = try ProcFile.open(caller, "/proc/self");
-    const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
+    const vfd = try caller.fd_table.insert(try File.init(allocator, .{ .proc = proc_file }));
 
     // Create a buffer for the result
     var result_buf: [64]u8 = undefined;
@@ -109,7 +117,7 @@ test "read count=5 from larger file returns at most 5 bytes" {
 
     const caller = supervisor.guest_procs.lookup.get(init_pid).?;
     const proc_file = try ProcFile.open(caller, "/proc/self");
-    const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
+    const vfd = try caller.fd_table.insert(try File.init(allocator, .{ .proc = proc_file }));
 
     var result_buf: [64]u8 = undefined;
     const notif = makeNotif(.read, .{
@@ -150,7 +158,7 @@ test "read count=0 returns 0" {
 
     const caller = supervisor.guest_procs.lookup.get(init_pid).?;
     const proc_file = try ProcFile.open(caller, "/proc/self");
-    const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
+    const vfd = try caller.fd_table.insert(try File.init(allocator, .{ .proc = proc_file }));
 
     var result_buf: [64]u8 = undefined;
     const notif = makeNotif(.read, .{

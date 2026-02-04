@@ -61,7 +61,9 @@ allocator: Allocator,
 lookup: ProcLookup = .empty,
 
 pub fn init(allocator: Allocator) Self {
-    return .{ .allocator = allocator };
+    return .{
+        .allocator = allocator,
+    };
 }
 
 pub fn deinit(self: *Self) void {

@@ -15,6 +15,8 @@ const getpid = @import("handlers/getpid.zig");
 const getppid = @import("handlers/getppid.zig");
 const gettid = @import("handlers/gettid.zig");
 const kill = @import("handlers/kill.zig");
+const tkill = @import("handlers/tkill.zig");
+const exit_ = @import("handlers/exit.zig");
 const exit_group = @import("handlers/exit_group.zig");
 
 pub inline fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
@@ -34,10 +36,14 @@ pub inline fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.
         .getppid => getppid.handle(notif, supervisor),
         .gettid => gettid.handle(notif, supervisor),
         .kill => kill.handle(notif, supervisor),
+        .tkill => tkill.handle(notif, supervisor),
+        .exit => exit_.handle(notif, supervisor),
         .exit_group => exit_group.handle(notif, supervisor),
 
         // Passthrough - create child process (kernel only, we lazily discover child later)
         .clone => replyContinue(notif.id),
+        // Passthrough - wait for child (kernel handles blocking, exit_group handles proc cleanup)
+        .wait4 => replyContinue(notif.id),
 
         // To implement - files
         .fstat,
@@ -56,8 +62,6 @@ pub inline fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.
         // To implement - process
         .set_tid_address,
         .execve,
-        .wait4,
-        .exit,
         // To implement - should virtualize (info leak in multitenant)
         .uname, // leaks kernel version, hostname
         .sysinfo, // leaks total RAM, uptime, load

@@ -1,6 +1,7 @@
 const std = @import("std");
 const linux = std.os.linux;
 const Proc = @import("../../proc/Proc.zig");
+const File = @import("../../fs/File.zig");
 const Supervisor = @import("../../../Supervisor.zig");
 const replySuccess = @import("../../../seccomp/notif.zig").replySuccess;
 const replyErr = @import("../../../seccomp/notif.zig").replyErr;
@@ -19,22 +20,29 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         return replyContinue(notif.id);
     }
 
-    const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
-        logger.log("close: process not found for pid={d}: {}", .{ caller_pid, err });
-        return replyErr(notif.id, .SRCH);
-    };
+    var file: *File = undefined;
+    {
+        supervisor.mutex.lock();
+        defer supervisor.mutex.unlock();
 
-    // Look up the file in the fd table
-    const file = caller.fd_table.get(fd) orelse {
-        logger.log("close: EBADF for fd={d}", .{fd});
-        return replyErr(notif.id, .BADF);
-    };
+        const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
+            logger.log("close: process not found for pid={d}: {}", .{ caller_pid, err });
+            return replyErr(notif.id, .SRCH);
+        };
 
-    // Close the file
+        file = caller.fd_table.get_ref(fd) orelse {
+            logger.log("close: EBADF for fd={d}", .{fd});
+            return replyErr(notif.id, .BADF);
+        };
+
+        // Remove the file from the fd table
+        // Our stack-local ref stays alive until unref'ed
+        _ = caller.fd_table.remove(fd);
+    }
+    defer file.unref();
+
+    // File close happens outside the lock since already removed from fd_table
     file.close();
-
-    // Remove from fd table
-    _ = caller.fd_table.remove(fd);
 
     logger.log("close: closed fd={d}", .{fd});
     return replySuccess(notif.id, 0);
@@ -48,7 +56,6 @@ const testing = std.testing;
 const makeNotif = @import("../../../seccomp/notif.zig").makeNotif;
 const isError = @import("../../../seccomp/notif.zig").isError;
 const isContinue = @import("../../../seccomp/notif.zig").isContinue;
-const File = @import("../../fs/file.zig").File;
 const ProcFile = @import("../../fs/backend/procfile.zig").ProcFile;
 
 test "close virtual FD returns success and removes from table" {
@@ -59,7 +66,7 @@ test "close virtual FD returns success and removes from table" {
 
     const caller = supervisor.guest_procs.lookup.get(init_pid).?;
     const proc_file = try ProcFile.open(caller, "/proc/self");
-    const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
+    const vfd = try caller.fd_table.insert(try File.init(allocator, .{ .proc = proc_file }));
 
     const notif = makeNotif(.close, .{
         .pid = init_pid,
@@ -71,7 +78,9 @@ test "close virtual FD returns success and removes from table" {
     try testing.expectEqual(@as(i64, 0), resp.val);
 
     // VFD should be gone
-    try testing.expect(caller.fd_table.get(vfd) == null);
+    const ref = caller.fd_table.get_ref(vfd);
+    defer if (ref) |f| f.unref();
+    try testing.expect(ref == null);
 }
 
 test "after close, read same VFD returns EBADF" {
@@ -82,7 +91,7 @@ test "after close, read same VFD returns EBADF" {
 
     const caller = supervisor.guest_procs.lookup.get(init_pid).?;
     const proc_file = try ProcFile.open(caller, "/proc/self");
-    const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
+    const vfd = try caller.fd_table.insert(try File.init(allocator, .{ .proc = proc_file }));
 
     // Close it
     const close_notif = makeNotif(.close, .{
@@ -159,7 +168,7 @@ test "double close - first succeeds, second EBADF" {
 
     const caller = supervisor.guest_procs.lookup.get(init_pid).?;
     const proc_file = try ProcFile.open(caller, "/proc/self");
-    const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
+    const vfd = try caller.fd_table.insert(try File.init(allocator, .{ .proc = proc_file }));
 
     const notif = makeNotif(.close, .{
         .pid = init_pid,

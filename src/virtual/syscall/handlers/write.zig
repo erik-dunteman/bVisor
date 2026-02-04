@@ -3,7 +3,7 @@ const linux = std.os.linux;
 const posix = std.posix;
 const types = @import("../../../types.zig");
 const Proc = @import("../../proc/Proc.zig");
-const File = @import("../../fs/file.zig").File;
+const File = @import("../../fs/File.zig");
 const Supervisor = @import("../../../Supervisor.zig");
 const testing = std.testing;
 const makeNotif = @import("../../../seccomp/notif.zig").makeNotif;
@@ -32,16 +32,24 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         return replyContinue(notif.id);
     }
 
-    const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
-        logger.log("write: process not found for pid={d}: {}", .{ caller_pid, err });
-        return replyErr(notif.id, .SRCH);
-    };
+    // Critical section: File lookup
+    // File refcounting allows us to keep a pointer to the file outside of the critical section
+    var file: *File = undefined;
+    {
+        supervisor.mutex.lock();
+        defer supervisor.mutex.unlock();
 
-    // Look up the file object
-    const file = caller.fd_table.get(fd) orelse {
-        logger.log("write: EBADF for fd={d}", .{fd});
-        return replyErr(notif.id, .BADF);
-    };
+        const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
+            logger.log("write: process not found for pid={d}: {}", .{ caller_pid, err });
+            return replyErr(notif.id, .SRCH);
+        };
+
+        file = caller.fd_table.get_ref(fd) orelse {
+            logger.log("write: EBADF for fd={d}", .{fd});
+            return replyErr(notif.id, .BADF);
+        };
+    }
+    defer file.unref();
 
     // Copy guest process buf to local
     const max_len = 4096;
@@ -116,7 +124,7 @@ test "write count=0 returns 0" {
     // Create a tmp file to write to
     const caller = supervisor.guest_procs.lookup.get(init_pid).?;
     const tmp_file = try Tmp.open(&supervisor.overlay, "/tmp/write_test_0", .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
-    const vfd = try caller.fd_table.insert(File{ .tmp = tmp_file });
+    const vfd = try caller.fd_table.insert(try File.init(allocator, .{ .tmp = tmp_file }));
 
     var data: [0]u8 = undefined;
     const notif = makeNotif(.write, .{
@@ -177,7 +185,7 @@ test "write to read-only backend (proc) returns EIO" {
 
     const caller = supervisor.guest_procs.lookup.get(init_pid).?;
     const proc_file = try ProcFile.open(caller, "/proc/self");
-    const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
+    const vfd = try caller.fd_table.insert(try File.init(allocator, .{ .proc = proc_file }));
 
     var data = "test".*;
     const notif = makeNotif(.write, .{

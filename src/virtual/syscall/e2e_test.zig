@@ -330,7 +330,9 @@ test "CLONE_FILES fork - child sees parents FDs, parent sees childs" {
 
     // Child should see parent's FD (shared fd_table)
     const child = supervisor.guest_procs.lookup.get(200).?;
-    try testing.expect(child.fd_table.get(parent_vfd) != null);
+    const child_ref = child.fd_table.get_ref(parent_vfd);
+    defer if (child_ref) |f| f.unref();
+    try testing.expect(child_ref != null);
 
     // Child opens a new file - parent should see it too (shared table)
     const child_open = openat_handler(
@@ -339,7 +341,9 @@ test "CLONE_FILES fork - child sees parents FDs, parent sees childs" {
     );
     try testing.expect(!isError(child_open));
     const child_vfd: i32 = @intCast(child_open.val);
-    try testing.expect(parent.fd_table.get(child_vfd) != null);
+    const parent_ref = parent.fd_table.get_ref(child_vfd);
+    defer if (parent_ref) |f| f.unref();
+    try testing.expect(parent_ref != null);
 
     // Cleanup
     _ = close_handler(makeCloseNotif(init_pid, parent_vfd), &supervisor);
@@ -370,12 +374,18 @@ test "non-CLONE_FILES fork - independent tables, parent close doesnt affect chil
     const child = supervisor.guest_procs.lookup.get(200).?;
 
     // Child should have a copy of the VFD
-    try testing.expect(child.fd_table.get(parent_vfd) != null);
+    const child_ref1 = child.fd_table.get_ref(parent_vfd);
+    defer if (child_ref1) |f| f.unref();
+    try testing.expect(child_ref1 != null);
 
     // Parent closes - should not affect child
     _ = close_handler(makeCloseNotif(init_pid, parent_vfd), &supervisor);
-    try testing.expect(parent.fd_table.get(parent_vfd) == null);
-    try testing.expect(child.fd_table.get(parent_vfd) != null);
+    const parent_ref = parent.fd_table.get_ref(parent_vfd);
+    defer if (parent_ref) |f| f.unref();
+    try testing.expect(parent_ref == null);
+    const child_ref2 = child.fd_table.get_ref(parent_vfd);
+    defer if (child_ref2) |f| f.unref();
+    try testing.expect(child_ref2 != null);
 }
 
 // ============================================================================

@@ -15,6 +15,9 @@ const isError = @import("../../../seccomp/notif.zig").isError;
 pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
     const caller_pid: AbsPid = @intCast(notif.pid);
 
+    supervisor.mutex.lock();
+    defer supervisor.mutex.unlock();
+
     const caller = supervisor.guest_procs.get(caller_pid) catch |err| {
         std.log.err("getppid: process not found for pid={d}: {}", .{ caller_pid, err });
         return replyErr(notif.id, .SRCH);
