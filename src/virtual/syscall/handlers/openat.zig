@@ -29,7 +29,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         logger.log("openat: Thread not found with tid={d}: {}", .{ caller_tid, err });
         return replyErr(notif.id, .SRCH);
     };
-    std.debug.assert(caller.tid != caller_tid);
+    std.debug.assert(caller.tid == caller_tid);
 
     // Read path from caller's memory
     const path_ptr: u64 = notif.data.arg1;

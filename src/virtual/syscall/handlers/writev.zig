@@ -36,7 +36,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         logger.log("writev: process not found for pid={d}: {}", .{ caller_tid, err });
         return replyErr(notif.id, .SRCH);
     };
-    std.debug.assert(caller.tid != caller_tid);
+    std.debug.assert(caller.tid == caller_tid);
 
     // Look up the File
     const file = caller.fd_table.get(fd) orelse {

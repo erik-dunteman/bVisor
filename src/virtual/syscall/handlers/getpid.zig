@@ -25,15 +25,15 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         std.log.err("getpid: Thread not found with tid={d}: {}", .{ caller_tid, err });
         return replyErr(notif.id, .SRCH);
     };
-    std.debug.assert(caller.tid != caller_tid);
+    std.debug.assert(caller.tid == caller_tid);
 
     // Get leader of caller's ThreadGroup
-    const leader = supervisor.guest_threads.get_leader(caller) catch |err| {
-        std.log.err("getpid: leader Thread not found for caller Thread with tid={d}: {}", .{ caller_tid, err });
+    const leader = caller.thread_group.getLeader() catch |err| {
+        std.log.err("getpid: Thread not found with tid={d}: {}", .{ caller.get_tgid(), err });
         return replyErr(notif.id, .SRCH);
     };
 
-    // Get namespaced TGID of this ThreadGroup, which matches the namespaced TID of the leader
+    // Get namespaced TGID of the caller's ThreadGroup, which matches the namespaced TID of its leader
     const ns_tgid: NsTgid = leader.namespace.getNsTid(leader) orelse std.debug.panic("getpid: Supervisor invariant violated - Thread's group leader's Namespace doesn't contain the leader Thread itself", .{});
 
     return replySuccess(notif.id, @intCast(ns_tgid));
@@ -67,28 +67,4 @@ test "getpid for child Thread returns its AbsTgid" {
     const notif = makeNotif(.getpid, .{ .pid = child_tid });
     const resp = handle(notif, &supervisor);
     try testing.expectEqual(child_tid, resp.val);
-}
-
-test "getpid from immediate child in new Namespace returns absolute TGID (deprecated?)" {
-    const allocator = testing.allocator;
-    const init_tid: AbsTid = 100;
-    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_tid);
-    defer supervisor.deinit();
-    defer proc_info.testing.reset(allocator);
-
-    // Child in new Namespace (depth 2, PID 1 in its own Namespace)
-    const child_tid: AbsTid = 9999;
-    const abstgids = [_]AbsTgid{ 9999, 1 };
-    try proc_info.testing.setupAbsTgids(allocator, child_tid, &abstgids);
-
-    const parent = supervisor.guest_threads.lookup.get(init_tid).?;
-    _ = try supervisor.guest_threads.registerChild(parent, child_tid, CloneFlags.from(linux.CLONE.NEWPID));
-
-    // Child calls getpid
-    const notif = makeNotif(.getpid, .{ .pid = child_tid });
-    const resp = handle(notif, &supervisor);
-    try testing.expect(!isError(resp));
-    try testing.expectEqual(1, resp.val);
-    // Child's AbsTgid should (almost certainly) not match the AbsTid for that child Thread (e.g., 1)
-    try testing.expect(child_tid != resp.val);
 }

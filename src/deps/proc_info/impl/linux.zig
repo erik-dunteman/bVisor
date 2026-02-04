@@ -71,7 +71,7 @@ pub fn readNsTids(tgid: AbsTgid, tid: AbsTid, nstid_buf: []NsTid) ![]NsTid {
     var lines = std.mem.splitScalar(u8, file_buf[0..n], '\n');
     while (lines.next()) |line| {
         if (std.mem.startsWith(u8, line, "NSpid:")) {
-            nstids = try parseNsField(u8, line[6..], nstid_buf, NsTid);
+            nstids = try parseNsField(NsTid, line[6..], nstid_buf);
             break;
         }
     }
@@ -109,9 +109,9 @@ pub fn readNsIds(tgid: AbsTgid, tid: AbsTid, nstgid_buf: []NsTgid, nstid_buf: []
     var lines = std.mem.splitScalar(u8, file_buf[0..n], '\n');
     while (lines.next()) |line| {
         if (std.mem.startsWith(u8, line, "NStgid:")) {
-            result.nstgids = try parseNsField(u8, line[7..], nstgid_buf, NsTgid);
+            result.nstgids = try parseNsField(NsTgid, line[7..], nstgid_buf);
         } else if (std.mem.startsWith(u8, line, "NSpid:")) {
-            result.nstids = try parseNsField(u8, line[6..], nstid_buf, NsTid);
+            result.nstids = try parseNsField(NsTid, line[6..], nstid_buf);
         }
 
         // Early exit once found both fields: NStgid & NSpid
@@ -126,7 +126,7 @@ pub fn readNsIds(tgid: AbsTgid, tid: AbsTid, nstgid_buf: []NsTgid, nstid_buf: []
 }
 
 /// Parser for namespace ID fields
-fn parseNsField(comptime T: type, field_data: []const u8, buf: []T, comptime IdType: type) ![]IdType {
+fn parseNsField(comptime IdType: type, field_data: []const u8, buf: []IdType) ![]IdType {
     const ids_str = std.mem.trim(u8, field_data, " \t");
     var count: usize = 0;
     var iter = std.mem.tokenizeAny(u8, ids_str, " \t");

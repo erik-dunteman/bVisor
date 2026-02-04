@@ -25,7 +25,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         logger.log("close: Task not found for tid={d}: {}", .{ caller_tid, err });
         return replyErr(notif.id, .SRCH);
     };
-    std.debug.assert(caller.tid != caller_tid);
+    std.debug.assert(caller.tid == caller_tid);
 
     // Look up the File in the FdTable
     const file = caller.fd_table.get(fd) orelse {
@@ -60,7 +60,7 @@ test "close virtual FD returns success and removes from table" {
     var supervisor = try Supervisor.init(allocator, testing.io, -1, init_tid);
     defer supervisor.deinit();
 
-    const caller = supervisor.guest_procs.lookup.get(init_tid).?;
+    const caller = supervisor.guest_threads.lookup.get(init_tid).?;
     const proc_file = try ProcFile.open(caller, "/proc/self");
     const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
 
@@ -83,7 +83,7 @@ test "after close, read same VFD returns EBADF" {
     var supervisor = try Supervisor.init(allocator, testing.io, -1, init_tid);
     defer supervisor.deinit();
 
-    const caller = supervisor.guest_procs.lookup.get(init_tid).?;
+    const caller = supervisor.guest_threads.lookup.get(init_tid).?;
     const proc_file = try ProcFile.open(caller, "/proc/self");
     const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
 
@@ -160,7 +160,7 @@ test "double close - first succeeds, second EBADF" {
     var supervisor = try Supervisor.init(allocator, testing.io, -1, init_tid);
     defer supervisor.deinit();
 
-    const caller = supervisor.guest_procs.lookup.get(init_tid).?;
+    const caller = supervisor.guest_threads.lookup.get(init_tid).?;
     const proc_file = try ProcFile.open(caller, "/proc/self");
     const vfd = try caller.fd_table.insert(File{ .proc = proc_file });
 

@@ -22,7 +22,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
     const logger = supervisor.logger;
 
     // Parse args
-    const caller_tid: AbsTid = @intCast(notif.tid);
+    const caller_tid: AbsTid = @intCast(notif.pid);
     const fd: i32 = @bitCast(@as(u32, @truncate(notif.data.arg0)));
     const buf_addr: u64 = notif.data.arg1;
     const count: usize = @truncate(notif.data.arg2);
@@ -38,7 +38,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         logger.log("read: Thread not found with tid={d}: {}", .{ caller_tid, err });
         return replyErr(notif.id, .SRCH);
     };
-    std.debug.assert(caller.tid != caller_tid);
+    std.debug.assert(caller.tid == caller_tid);
 
     // Look up the virtual FD
     const file = caller.fd_table.get(fd) orelse {

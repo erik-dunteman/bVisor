@@ -38,7 +38,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         logger.log("write: process not found for pid={d}: {}", .{ caller_tid, err });
         return replyErr(notif.id, .SRCH);
     };
-    std.debug.assert(caller.tid != caller_tid);
+    std.debug.assert(caller.tid == caller_tid);
 
     // Look up the File
     const file = caller.fd_table.get(fd) orelse {
@@ -55,7 +55,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         return replyErr(notif.id, .FAULT);
     };
 
-    // Write local buf to File
+    // Write local buf to file
     const n = file.write(buf) catch |err| {
         logger.log("write: error writing to fd: {s}", .{@errorName(err)});
         return replyErr(notif.id, .IO);

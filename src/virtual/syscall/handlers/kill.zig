@@ -32,7 +32,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         std.log.err("kill: Thread not found with tid={d}: {}", .{ caller_tid, err });
         return replyErr(notif.id, .SRCH);
     };
-    std.debug.assert(caller.tid != caller_tid);
+    std.debug.assert(caller.tid == caller_tid);
 
     // There may be *many* candidate Thread-s satisfying having namespaced TGID == target_nstgid.
     // But, we know there must be a group leader whose namespaced TID == target_nstgid
@@ -43,7 +43,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
 
     // Yield the targetted TGID in absolute terms
     const target_abstgid: AbsTgid = target_leader.get_tgid();
-    std.debug.panic(target_abstgid == target_leader.tid);
+    std.debug.assert(target_abstgid == target_leader.tid);
 
     // Execute real kill syscall
     const sig: posix.SIG = @enumFromInt(signal);

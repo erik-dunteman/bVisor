@@ -46,6 +46,10 @@ pub fn unref(self: *Self) void {
     }
 }
 
+pub inline fn getLeader(self: *Self) !*Thread {
+    return self.threads.get(self.tgid) orelse error.LeaderNotFound;
+}
+
 /// Register a Thread in this ThreadGroup
 pub fn registerThread(self: *Self, allocator: Allocator, thread: *Thread) !void {
     try self.threads.put(allocator, thread.tid, thread);

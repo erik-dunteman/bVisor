@@ -18,7 +18,7 @@ pub fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP
         std.log.err("gettid: Thread not found with tid={d}: {}", .{ caller_tid, err });
         return replyErr(notif.id, .SRCH);
     };
-    std.debug.assert(caller.tid != caller_tid);
+    std.debug.assert(caller.tid == caller_tid);
 
     // Get namespaced TID of this caller Thread
     const ns_tid = caller.namespace.getNsTid(caller) orelse std.debug.panic("gettid: Supervisor invariant violated - Thread's Namespace doesn't contain the Thread itself", .{});
