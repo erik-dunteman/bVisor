@@ -24,14 +24,16 @@ pub fn runCmd(env: c.napi_env, info: c.napi_callback_info) callconv(.c) c.napi_v
     _ = self;
 
     // TODO: actually run command
-    const stdout = Stream.init(napi.allocator) catch return null;
-    errdefer stdout.deinit(napi.allocator);
-    const stderr = Stream.init(napi.allocator) catch return null;
-    errdefer stderr.deinit(napi.allocator);
+    var stdout: ?*Stream = Stream.init(napi.allocator) catch return null;
+    errdefer if (stdout) |s| s.deinit(napi.allocator);
+    var stderr: ?*Stream = Stream.init(napi.allocator) catch return null;
+    errdefer if (stderr) |s| s.deinit(napi.allocator);
 
-    // Wrap into externals
-    const stdoutExternal = napi.ZigExternal(Stream).wrap(env, stdout) catch return null;
-    const stderrExternal = napi.ZigExternal(Stream).wrap(env, stderr) catch return null;
+    // Wrap into externals - after wrap(), JS owns the memory via GC finalizer
+    const stdoutExternal = napi.ZigExternal(Stream).wrap(env, stdout.?) catch return null;
+    stdout = null; // Transfer ownership to JS, effectively cancelling errdefer
+    const stderrExternal = napi.ZigExternal(Stream).wrap(env, stderr.?) catch return null;
+    stderr = null; // Transfer ownership to JS, effectively cancelling errdefer
 
     // Create object to return
     const result = napi.createObject(env) catch return null;
