@@ -1,4 +1,4 @@
-import { Sandbox } from "./index";
+import { Sandbox } from "bvisor";
 
 console.log("\n--- runCmd, streaming ---");
 const sb = new Sandbox();

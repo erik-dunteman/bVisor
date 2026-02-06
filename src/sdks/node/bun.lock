@@ -18,15 +18,31 @@
         "@bvisor/linux-x64-musl": "0.0.1",
       },
     },
+    "platforms/linux-arm64-gnu": {
+      "name": "@bvisor/linux-arm64-gnu",
+      "version": "0.0.1",
+    },
+    "platforms/linux-arm64-musl": {
+      "name": "@bvisor/linux-arm64-musl",
+      "version": "0.0.1",
+    },
+    "platforms/linux-x64-gnu": {
+      "name": "@bvisor/linux-x64-gnu",
+      "version": "0.0.1",
+    },
+    "platforms/linux-x64-musl": {
+      "name": "@bvisor/linux-x64-musl",
+      "version": "0.0.1",
+    },
   },
   "packages": {
-    "@bvisor/linux-arm64-gnu": ["@bvisor/linux-arm64-gnu@0.0.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-vVYnos8Tap3vcZTC+WMvuZhkTMDG0JM3PIvIhSfybp1eouLTR0ML615cz4EQxaX+r7dnlEjedbZ96RshQoi9jQ=="],
+    "@bvisor/linux-arm64-gnu": ["@bvisor/linux-arm64-gnu@workspace:platforms/linux-arm64-gnu"],
 
-    "@bvisor/linux-arm64-musl": ["@bvisor/linux-arm64-musl@0.0.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-oKY5alLSxIR6EPAWle2eI7Ac/jgmliJCUkrVhHMBLHaYW4vdZvB5ClwN6DGSj4rV27t0i1Pbvu89ZKoNspVMDw=="],
+    "@bvisor/linux-arm64-musl": ["@bvisor/linux-arm64-musl@workspace:platforms/linux-arm64-musl"],
 
-    "@bvisor/linux-x64-gnu": ["@bvisor/linux-x64-gnu@0.0.1", "", { "os": "linux", "cpu": "x64" }, "sha512-pUQMLK13IYQ7YHUVEY1fcLDmpeSP7sYkV9c4u2z662HPl1TcbirHBVGVk1KoKmtoE9br90HY9HPmBZtEF/VEDA=="],
+    "@bvisor/linux-x64-gnu": ["@bvisor/linux-x64-gnu@workspace:platforms/linux-x64-gnu"],
 
-    "@bvisor/linux-x64-musl": ["@bvisor/linux-x64-musl@0.0.1", "", { "os": "linux", "cpu": "x64" }, "sha512-RQG6YsaeS+IK6u8lvjy0vMQUzcZaVFrlilCsqpbfJdj7p1jauRbgVrP2SrrFT00aPIitHOd+ayFZZgEtBtgiYw=="],
+    "@bvisor/linux-x64-musl": ["@bvisor/linux-x64-musl@workspace:platforms/linux-x64-musl"],
 
     "@types/node": ["@types/node@25.2.0", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-DZ8VwRFUNzuqJ5khrvwMXHmvPe+zGayJhr2CDNiKB1WBE1ST8Djl00D0IC4vvNmHMdj6DlbYRIaFE7WHjlDl5w=="],
 

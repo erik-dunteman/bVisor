@@ -3,15 +3,27 @@
   "version": "0.0.1",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "bun": "./index.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "files": [
-    "dist/"
+    "dist/",
+    "index.ts",
+    "src/"
   ],
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "npm run build",
     "predev": "cd ../../.. && zig build",
-    "dev": "docker run --rm -v .:/app -w /app oven/bun:alpine sh -c 'bun install && bun test.ts'"
+    "dev": "docker run --rm -v .:/app -w /app oven/bun:alpine sh -c 'bun install && bun test.ts'",
+    "test:smoke": "docker run --rm -v ./test.ts:/test.ts:ro oven/bun:alpine sh -c 'cd /tmp && echo {} > package.json && bun add bvisor && cp /test.ts . && bun test.ts'"
   },
+  "workspaces": [
+    "platforms/*"
+  ],
   "dependencies": {
     "detect-libc": "^2.0.3"
   },
