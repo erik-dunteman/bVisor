@@ -3,3 +3,5 @@ zig-out/
 *.o
 *.node
 node_modules/
+dist/
+.env

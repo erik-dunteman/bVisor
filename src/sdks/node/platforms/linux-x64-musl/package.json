@@ -4,5 +4,8 @@
   "os": ["linux"],
   "cpu": ["x64"],
   "libc": ["musl"],
-  "main": "libbvisor.node"
+  "main": "libbvisor.node",
+  "files": [
+    "libbvisor.node"
+  ]
 }
