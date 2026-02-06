@@ -1,0 +1,8 @@
+{
+  "name": "@bvisor/linux-arm64-gnu",
+  "version": "0.0.1",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "libc": ["glibc"],
+  "main": "libbvisor.node"
+}

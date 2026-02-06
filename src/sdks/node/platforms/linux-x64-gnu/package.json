@@ -1,0 +1,8 @@
+{
+  "name": "@bvisor/linux-x64-gnu",
+  "version": "0.0.1",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "libc": ["glibc"],
+  "main": "libbvisor.node"
+}

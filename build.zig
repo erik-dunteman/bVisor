@@ -17,17 +17,20 @@ pub fn build(b: *std.Build) void {
 
     const node_platforms = [_]struct {
         cpu_arch: std.Target.Cpu.Arch,
+        abi: std.Target.Abi,
         dest_dir: []const u8,
     }{
-        .{ .cpu_arch = .aarch64, .dest_dir = "../src/sdks/node/platforms/linux-arm64" },
-        .{ .cpu_arch = .x86_64, .dest_dir = "../src/sdks/node/platforms/linux-x64" },
+        .{ .cpu_arch = .aarch64, .abi = .musl, .dest_dir = "../src/sdks/node/platforms/linux-arm64-musl" },
+        .{ .cpu_arch = .aarch64, .abi = .gnu, .dest_dir = "../src/sdks/node/platforms/linux-arm64-gnu" },
+        .{ .cpu_arch = .x86_64, .abi = .musl, .dest_dir = "../src/sdks/node/platforms/linux-x64-musl" },
+        .{ .cpu_arch = .x86_64, .abi = .gnu, .dest_dir = "../src/sdks/node/platforms/linux-x64-gnu" },
     };
 
     for (node_platforms) |platform| {
         const target = b.resolveTargetQuery(.{
             .cpu_arch = platform.cpu_arch,
             .os_tag = .linux,
-            .abi = .musl,
+            .abi = platform.abi,
         });
 
         const node_lib = b.addLibrary(.{

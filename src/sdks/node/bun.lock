@@ -4,30 +4,49 @@
   "workspaces": {
     "": {
       "name": "bvisor",
+      "dependencies": {
+        "detect-libc": "^2.0.3",
+      },
       "devDependencies": {
         "@types/node": "^25.2.0",
         "typescript": "^5.0.0",
       },
       "optionalDependencies": {
-        "@bvisor/linux-arm64": "0.0.1",
-        "@bvisor/linux-x64": "0.0.1",
+        "@bvisor/linux-arm64-gnu": "0.0.1",
+        "@bvisor/linux-arm64-musl": "0.0.1",
+        "@bvisor/linux-x64-gnu": "0.0.1",
+        "@bvisor/linux-x64-musl": "0.0.1",
       },
     },
-    "platforms/linux-arm64": {
-      "name": "@bvisor/linux-arm64",
+    "platforms/linux-arm64-gnu": {
+      "name": "@bvisor/linux-arm64-gnu",
       "version": "0.0.1",
     },
-    "platforms/linux-x64": {
-      "name": "@bvisor/linux-x64",
+    "platforms/linux-arm64-musl": {
+      "name": "@bvisor/linux-arm64-musl",
+      "version": "0.0.1",
+    },
+    "platforms/linux-x64-gnu": {
+      "name": "@bvisor/linux-x64-gnu",
+      "version": "0.0.1",
+    },
+    "platforms/linux-x64-musl": {
+      "name": "@bvisor/linux-x64-musl",
       "version": "0.0.1",
     },
   },
   "packages": {
-    "@bvisor/linux-arm64": ["@bvisor/linux-arm64@workspace:platforms/linux-arm64"],
+    "@bvisor/linux-arm64-gnu": ["@bvisor/linux-arm64-gnu@workspace:platforms/linux-arm64-gnu"],
 
-    "@bvisor/linux-x64": ["@bvisor/linux-x64@workspace:platforms/linux-x64"],
+    "@bvisor/linux-arm64-musl": ["@bvisor/linux-arm64-musl@workspace:platforms/linux-arm64-musl"],
+
+    "@bvisor/linux-x64-gnu": ["@bvisor/linux-x64-gnu@workspace:platforms/linux-x64-gnu"],
+
+    "@bvisor/linux-x64-musl": ["@bvisor/linux-x64-musl@workspace:platforms/linux-x64-musl"],
 
     "@types/node": ["@types/node@25.2.0", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-DZ8VwRFUNzuqJ5khrvwMXHmvPe+zGayJhr2CDNiKB1WBE1ST8Djl00D0IC4vvNmHMdj6DlbYRIaFE7WHjlDl5w=="],
+
+    "detect-libc": ["detect-libc@2.1.2", "", {}, "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="],
 
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 

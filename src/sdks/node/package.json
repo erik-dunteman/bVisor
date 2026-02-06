@@ -11,9 +11,14 @@
   "workspaces": [
     "platforms/*"
   ],
+  "dependencies": {
+    "detect-libc": "^2.0.3"
+  },
   "optionalDependencies": {
-    "@bvisor/linux-arm64": "0.0.1",
-    "@bvisor/linux-x64": "0.0.1"
+    "@bvisor/linux-arm64-musl": "0.0.1",
+    "@bvisor/linux-arm64-gnu": "0.0.1",
+    "@bvisor/linux-x64-musl": "0.0.1",
+    "@bvisor/linux-x64-gnu": "0.0.1"
   },
   "devDependencies": {
     "@types/node": "^25.2.0",

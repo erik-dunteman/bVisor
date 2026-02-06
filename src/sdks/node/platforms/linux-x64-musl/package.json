@@ -1,7 +1,8 @@
 {
-  "name": "@bvisor/linux-x64",
+  "name": "@bvisor/linux-x64-musl",
   "version": "0.0.1",
   "os": ["linux"],
   "cpu": ["x64"],
+  "libc": ["musl"],
   "main": "libbvisor.node"
 }

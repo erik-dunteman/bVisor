@@ -1,23 +1,60 @@
-import { arch, platform } from "os";
+import { External } from "./napi";
+import { native } from "./native";
 
-if (platform() !== "linux") {
-  throw new Error("bVisor only supports Linux");
+class Stream {
+  private ptr: External<"Stream">;
+
+  constructor(ptr: External<"Stream">) {
+    this.ptr = ptr;
+  }
+
+  toReadableStream(): ReadableStream<Uint8Array> {
+    const self = this;
+    return new ReadableStream({
+      async pull(controller) {
+        // TODO: make streamNext return a promise
+        const chunk = native.streamNext(self.ptr);
+        if (chunk) {
+          controller.enqueue(chunk);
+        } else {
+          controller.close();
+        }
+      },
+    });
+  }
 }
 
-const native = require(`@bvisor/linux-${arch()}`);
-
 export class Sandbox {
-  private handle: unknown;
+  private ptr: External<"Sandbox">;
 
   constructor() {
-    this.handle = native.createSandbox();
+    this.ptr = native.createSandbox();
   }
 
-  increment() {
-    native.sandboxIncrement(this.handle);
+  runCmd(command: string) {
+    const result = native.sandboxRunCmd(this.ptr, command);
+    return createOutput(
+      new Stream(result.stdout).toReadableStream(),
+      new Stream(result.stderr).toReadableStream()
+    );
   }
+}
 
-  getValue(): number {
-    return native.sandboxGetValue(this.handle);
-  }
+export interface Output {
+  stdoutStream: ReadableStream<Uint8Array>;
+  stderrStream: ReadableStream<Uint8Array>;
+  stdout: () => Promise<string>;
+  stderr: () => Promise<string>;
+}
+
+function createOutput(
+  stdoutStream: ReadableStream<Uint8Array>,
+  stderrStream: ReadableStream<Uint8Array>
+): Output {
+  return {
+    stdoutStream,
+    stderrStream,
+    stdout: () => new Response(stdoutStream).text(),
+    stderr: () => new Response(stderrStream).text(),
+  };
 }

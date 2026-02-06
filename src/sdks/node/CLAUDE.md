@@ -5,29 +5,32 @@
 ```
 src/sdks/node/
   index.ts              # Package entry point, re-exports Sandbox
-  src/sandbox.ts        # Sandbox class, loads native binary for current platform
+  src/
+    native.ts        # FFI contract: NativeModule interface, platform check, require()
+    napi.ts             # External<T> phantom type for opaque native handles
+    sandbox.ts          # Sandbox class, public API
   test.ts               # Smoke test, run via `npm run dev`
   platforms/
     linux-arm64/        # @bvisor/linux-arm64 package
-      package.json
-      libbvisor.node    # Built by `zig build` (gitignored)
     linux-x64/          # @bvisor/linux-x64 package
-      package.json
-      libbvisor.node    # Built by `zig build` (gitignored)
   zig/                  # Zig source for native bindings
     lib.zig             # Entry point, napi module registration
-    napi.zig            # N-API helpers
+    napi.zig            # N-API helpers, ZigExternal(T)
     Sandbox.zig         # Sandbox implementation
 ```
+
+## FFI boundary
+
+`src/native.ts` is the single source of truth for the Zig-TS contract. When adding a new native function: add it to the `NativeModule` interface in `native.ts`, implement in Zig.
+
+Opaque handles use `External<T>` (defined in `napi.ts`) on the TS side. On the Zig side, `ZigExternal(T)` in `zig/napi.zig` handles wrapping/unwrapping — all JS-facing values are plain `c.napi_value`.
 
 ## Build
 
 `zig build` (from project root) cross-compiles native binaries for both linux platforms. The build is defined in the root `build.zig` which loops over aarch64 and x86_64 targets.
 
-`npm run dev` runs `zig build` then executes `test.ts` inside a `oven/bun:alpine` Docker container (musl-based, matching the native binary ABI).
+`npm run dev` runs `zig build` then executes `test.ts` inside a `oven/bun:alpine` Docker container.
 
 ## Platform packages
 
 The `platforms/` subdirectories are npm workspace packages. `npm install` on Linux resolves them locally via workspaces. On macOS, `npm install` will fail due to `os`/`cpu` filtering in the platform package.json files -- use `npm run dev` to build and test in Docker instead.
-
-The native binary is loaded at runtime based on `os.arch()`. A platform check in `sandbox.ts` throws before loading if not on Linux.
