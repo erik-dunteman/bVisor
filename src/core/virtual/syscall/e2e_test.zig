@@ -23,8 +23,19 @@ const write_handler = @import("handlers/write.zig").handle;
 const close_handler = @import("handlers/close.zig").handle;
 const readv_handler = @import("handlers/readv.zig").handle;
 const writev_handler = @import("handlers/writev.zig").handle;
+const fstat_handler = @import("handlers/fstat.zig").handle;
+
+const Stat = @import("../../types.zig").Stat;
 
 const proc_info = @import("../../deps/deps.zig").proc_info;
+
+fn makeFstatNotif(tid: AbsTid, vfd: i32, statbuf: *Stat) linux.SECCOMP.notif {
+    return makeNotif(.fstat, .{
+        .pid = tid,
+        .arg0 = @as(u64, @bitCast(@as(i64, vfd))),
+        .arg1 = @intFromPtr(statbuf),
+    });
+}
 
 fn makeOpenatNotif(tid: AbsTid, path: [*:0]const u8, flags: u32, mode: u32) linux.SECCOMP.notif {
     return makeNotif(.openat, .{
@@ -556,4 +567,82 @@ test "unknown PID returns ESRCH across all handlers" {
         &supervisor,
     );
     try testing.expectEqual(esrch, close_resp.@"error");
+}
+
+// ============================================================================
+// E2E: fstat on /proc/self returns correct struct stat fields
+// ============================================================================
+
+test "fstat on proc file writes correct struct stat" {
+    const allocator = testing.allocator;
+    const init_tid: AbsTid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_tid);
+    defer supervisor.deinit();
+
+    // Open /proc/self
+    const open_resp = openat_handler(
+        makeOpenatNotif(init_tid, "/proc/self", 0, 0),
+        &supervisor,
+    );
+    try testing.expect(!isError(open_resp));
+    const vfd: i32 = @intCast(open_resp.val);
+
+    // fstat
+    var stat_buf: Stat = std.mem.zeroes(Stat);
+    const fstat_resp = fstat_handler(
+        makeFstatNotif(init_tid, vfd, &stat_buf),
+        &supervisor,
+    );
+    try testing.expect(!isError(fstat_resp));
+    try testing.expectEqual(@as(i64, 0), fstat_resp.val);
+
+    // ProcFile.statx sets: mode = S.IFREG | 0o444, nlink = 1, blksize = 4096, size = content_len
+    // Content of /proc/self for tid 100 is "100\n" (4 bytes)
+    try testing.expectEqual(linux.S.IFREG | 0o444, stat_buf.st_mode);
+    try testing.expectEqual(@as(u32, 1), stat_buf.st_nlink);
+    try testing.expectEqual(@as(i32, 4096), stat_buf.st_blksize);
+    try testing.expectEqual(@as(i64, 4), stat_buf.st_size);
+
+    _ = close_handler(makeCloseNotif(init_tid, vfd), &supervisor);
+}
+
+// ============================================================================
+// E2E: fstat on stdio fd returns continue (passthrough)
+// ============================================================================
+
+test "fstat on stdio fd returns continue" {
+    const allocator = testing.allocator;
+    const init_tid: AbsTid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_tid);
+    defer supervisor.deinit();
+
+    var stat_buf: Stat = std.mem.zeroes(Stat);
+
+    // stdin
+    const resp0 = fstat_handler(makeFstatNotif(init_tid, 0, &stat_buf), &supervisor);
+    try testing.expect(isContinue(resp0));
+
+    // stdout
+    const resp1 = fstat_handler(makeFstatNotif(init_tid, 1, &stat_buf), &supervisor);
+    try testing.expect(isContinue(resp1));
+
+    // stderr
+    const resp2 = fstat_handler(makeFstatNotif(init_tid, 2, &stat_buf), &supervisor);
+    try testing.expect(isContinue(resp2));
+}
+
+// ============================================================================
+// E2E: fstat on unknown VFD returns EBADF
+// ============================================================================
+
+test "fstat on unknown VFD returns EBADF" {
+    const allocator = testing.allocator;
+    const init_tid: AbsTid = 100;
+    var supervisor = try Supervisor.init(allocator, testing.io, -1, init_tid);
+    defer supervisor.deinit();
+
+    var stat_buf: Stat = std.mem.zeroes(Stat);
+    const resp = fstat_handler(makeFstatNotif(init_tid, 99, &stat_buf), &supervisor);
+    try testing.expect(isError(resp));
+    try testing.expectEqual(-@as(i32, @intCast(@intFromEnum(linux.E.BADF))), resp.@"error");
 }

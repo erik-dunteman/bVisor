@@ -1,4 +1,5 @@
 const std = @import("std");
+const linux = std.os.linux;
 const Thread = @import("../../proc/Thread.zig");
 const NsTgid = Thread.NsTgid;
 const Namespace = @import("../../proc/Namespace.zig");
@@ -122,6 +123,39 @@ pub const ProcFile = struct {
 
     pub fn close(self: *ProcFile) void {
         _ = self;
+    }
+
+    pub fn statx(self: *ProcFile) !linux.Statx {
+        var statx_buf: linux.Statx = std.mem.zeroes(linux.Statx);
+
+        // No kernel fd, so build ourselves
+        statx_buf.mask = .{
+            .MODE = true,
+            .NLINK = true,
+            .SIZE = true,
+        };
+
+        statx_buf.mode = linux.S.IFREG | 0o444; // regular file, read only
+        statx_buf.nlink = 1;
+        statx_buf.size = self.content_len;
+
+        statx_buf.blksize = 4096; // doesn't require a mask bit because none exists
+
+        // TODO: implement these
+        // statx_buf.ino // as counter in FdTable?
+        // statx_buf.uid // in File?
+        // statx_buf.gid // in File?
+        // statx_buf.atime // in backend struct? Procfile can store open_time : i64, ...
+        // statx_buf.mtime // in backend struct?
+        // statx_buf.ctime // in backend struct?
+        // statx_buf.dev // fake device number, global to sandbox?
+
+        return statx_buf;
+    }
+
+    pub fn statxByPath(caller: *Thread, path: []const u8) !linux.Statx {
+        var file = try ProcFile.open(caller, path);
+        return file.statx();
     }
 };
 

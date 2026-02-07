@@ -1,4 +1,5 @@
 const std = @import("std");
+const linux = std.os.linux;
 const posix = std.posix;
 const OverlayRoot = @import("../../OverlayRoot.zig");
 
@@ -24,6 +25,36 @@ pub const Passthrough = struct {
     // but tests create Files with fake fds that were never opened.
     pub fn close(self: *Passthrough) void {
         _ = std.posix.system.close(self.fd);
+    }
+
+    pub fn statx(self: *Passthrough) !linux.Statx {
+        var statx_buf: linux.Statx = std.mem.zeroes(linux.Statx);
+        const rc = linux.statx(
+            self.fd,
+            "",
+            linux.AT.EMPTY_PATH,
+            linux.STATX.BASIC_STATS,
+            &statx_buf,
+        );
+        if (linux.errno(rc) != .SUCCESS) return error.StatxFail;
+        return statx_buf;
+    }
+
+    pub fn statxByPath(path: []const u8) !linux.Statx {
+        // Open O_PATH (no permissions needed, works on any file type)
+        const fd = try posix.open(path, .{ .PATH = true }, 0);
+        defer posix.close(fd);
+
+        var statx_buf: linux.Statx = std.mem.zeroes(linux.Statx);
+        const rc = linux.statx(
+            fd,
+            "",
+            linux.AT.EMPTY_PATH,
+            linux.STATX.BASIC_STATS,
+            &statx_buf,
+        );
+        if (linux.errno(rc) != .SUCCESS) return error.StatxFail;
+        return statx_buf;
     }
 };
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const linux = std.os.linux;
 const posix = std.posix;
 const OverlayRoot = @import("../../OverlayRoot.zig");
 
@@ -24,6 +25,39 @@ pub const Tmp = struct {
     // but tests create Files with fake fds that were never opened.
     pub fn close(self: *Tmp) void {
         _ = std.posix.system.close(self.fd);
+    }
+
+    pub fn statx(self: *Tmp) !linux.Statx {
+        var statx_buf: linux.Statx = std.mem.zeroes(linux.Statx);
+
+        const rc = linux.statx(
+            self.fd,
+            "",
+            linux.AT.EMPTY_PATH,
+            linux.STATX.BASIC_STATS,
+            &statx_buf,
+        );
+        if (linux.errno(rc) != .SUCCESS) return error.StatxFail;
+        return statx_buf;
+    }
+
+    pub fn statxByPath(overlay: *OverlayRoot, path: []const u8) !linux.Statx {
+        var resolve_buf: [512]u8 = undefined;
+        const resolved = try overlay.resolveTmp(path, &resolve_buf);
+
+        const fd = try posix.open(resolved, .{ .PATH = true }, 0);
+        defer posix.close(fd);
+
+        var statx_buf: linux.Statx = std.mem.zeroes(linux.Statx);
+        const rc = linux.statx(
+            fd,
+            "",
+            linux.AT.EMPTY_PATH,
+            linux.STATX.BASIC_STATS,
+            &statx_buf,
+        );
+        if (linux.errno(rc) != .SUCCESS) return error.StatxFail;
+        return statx_buf;
     }
 };
 

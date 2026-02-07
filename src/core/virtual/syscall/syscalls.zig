@@ -20,6 +20,8 @@ const exit_ = @import("handlers/exit.zig");
 const exit_group = @import("handlers/exit_group.zig");
 const dup = @import("handlers/dup.zig");
 const dup3 = @import("handlers/dup3.zig");
+const fstat = @import("handlers/fstat.zig");
+const fstatat64 = @import("handlers/fstatat64.zig");
 
 pub inline fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.SECCOMP.notif_resp {
     const sys: linux.SYS = @enumFromInt(notif.data.nr);
@@ -35,6 +37,8 @@ pub inline fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.
         .writev => writev.handle(notif, supervisor),
         .dup => dup.handle(notif, supervisor),
         .dup3 => dup3.handle(notif, supervisor),
+        .fstat => fstat.handle(notif, supervisor),
+        .fstatat64 => fstatat64.handle(notif, supervisor),
         // Implemented - process
         .getpid => getpid.handle(notif, supervisor),
         .getppid => getppid.handle(notif, supervisor),
@@ -51,8 +55,6 @@ pub inline fn handle(notif: linux.SECCOMP.notif, supervisor: *Supervisor) linux.
         .waitid => replyContinue(notif.id),
 
         // To implement - files
-        .fstat,
-        .fstatat64,
         .fcntl,
         .ioctl,
         .pipe2,
